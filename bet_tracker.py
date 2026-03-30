@@ -21,54 +21,61 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. HELPER FUNCTIONS ---
+# --- 3. SMART HELPER FUNCTIONS ---
+def get_ws_smart(sheet, name):
+    """Finds a worksheet regardless of case or trailing spaces."""
+    # This pulls every single tab name from your Google Sheet to compare
+    all_ws = {ws.title.lower().strip(): ws for ws in sheet.worksheets()}
+    target = name.lower().strip()
+    
+    if target in all_ws:
+        return all_ws[target]
+    
+    # If it fails, this will tell you exactly what tabs the computer found
+    st.error(f"Tab Not Found: '{target}'. I only found: {list(all_ws.keys())}")
+    st.stop()
+
 def load_credentials():
     ws = sheet.worksheet("Credentials")
     df = pd.DataFrame(ws.get_all_records())
     credentials = {"usernames": {}}
     for _, row in df.iterrows():
-        # Force username to string for safety
-        credentials["usernames"][str(row['Username'])] = {
+        user = str(row['Username']).strip()
+        credentials["usernames"][user] = {
             "name": str(row['Name']),
             "password": str(row['Password']),
             "email": str(row['Email'])
         }
     return credentials
 
-# CRITICAL FIX: Every function now uses .lower() on the prefix
 def load_data(user_prefix):
-    prefix = user_prefix.lower()
+    ws = get_ws_smart(sheet, f"{user_prefix}_history")
     try:
-        ws = sheet.worksheet(f"{prefix}_history")
         data = ws.get_all_records()
         return pd.DataFrame(data) if data else pd.DataFrame(columns=['Date', 'Book', 'State', 'Event', 'Odds', 'Edge', 'Stake', 'Result', 'Profit'])
     except:
         return pd.DataFrame(columns=['Date', 'Book', 'State', 'Event', 'Odds', 'Edge', 'Stake', 'Result', 'Profit'])
 
 def save_data(df, user_prefix):
-    prefix = user_prefix.lower()
-    ws = sheet.worksheet(f"{prefix}_history")
+    ws = get_ws_smart(sheet, f"{user_prefix}_history")
     ws.clear()
     df_save = df.copy()
     df_save['Date'] = pd.to_datetime(df_save['Date']).dt.strftime('%Y-%m-%d')
     ws.update(values=[df_save.columns.values.tolist()] + df_save.fillna('').values.tolist(), range_name='A1')
 
 def load_bankroll(user_prefix):
-    prefix = user_prefix.lower()
-    ws = sheet.worksheet(f"{prefix}_bankroll")
+    ws = get_ws_smart(sheet, f"{user_prefix}_bankroll")
     val = ws.acell('B1').value
     return float(val) if val else 1000.0
 
 def update_bankroll(amount, user_prefix):
-    prefix = user_prefix.lower()
     st.session_state.bankroll += amount
-    ws = sheet.worksheet(f"{prefix}_bankroll")
+    ws = get_ws_smart(sheet, f"{user_prefix}_bankroll")
     ws.update_acell('B1', st.session_state.bankroll)
 
 def set_bankroll(amount, user_prefix):
-    prefix = user_prefix.lower()
     st.session_state.bankroll = amount
-    ws = sheet.worksheet(f"{prefix}_bankroll")
+    ws = get_ws_smart(sheet, f"{user_prefix}_bankroll")
     ws.update_acell('B1', amount)
 
 def load_dropdowns():
@@ -90,16 +97,16 @@ def american_to_decimal(odds):
     if odds > 0: return (odds / 100) + 1
     return (100 / abs(odds)) + 1
 
-# --- 4. AUTHENTICATION ---
+# --- 4. AUTHENTICATION & CHROME POPUP FIX ---
 credentials = load_credentials()
 authenticator = stauth.Authenticate(
     credentials,
     "bet_tracker_cookie",
-    "glick_pick_secure_key",
+    "glick_pick_key_v2",
     cookie_expiry_days=30
 )
 
-# Use a placeholder to wipe the login form
+# Container to wipe the login form
 login_placeholder = st.empty()
 
 if not st.session_state.get("authentication_status"):
@@ -107,10 +114,19 @@ if not st.session_state.get("authentication_status"):
         authenticator.login(location='main')
 
 if st.session_state["authentication_status"]:
-    # 1. DELETE THE LOGIN FORM FROM THE BROWSER
+    # Wipe the login form from the browser's memory
     login_placeholder.empty()
 
-    # 2. SESSION SETUP
+    # THE CHROME KILLER: A "Gate" button to break focus
+    if 'dashboard_entered' not in st.session_state:
+        st.balloons()
+        st.success(f"Successfully logged in as {st.session_state['name']}!")
+        if st.button("🚀 Enter Dashboard", use_container_width=True):
+            st.session_state['dashboard_entered'] = True
+            st.rerun()
+        st.stop() # Wait here until they click
+
+    # --- 5. LOGGED IN SESSION SETUP ---
     username = st.session_state["username"]
     name = st.session_state["name"]
 
@@ -119,7 +135,7 @@ if st.session_state["authentication_status"]:
 
     df = load_data(username)
     
-    # --- 5. SIDEBAR ---
+    # --- 6. SIDEBAR ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.title(f"Welcome, {name}")
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
@@ -131,7 +147,7 @@ if st.session_state["authentication_status"]:
     input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input")
     input_edge_percent = st.sidebar.number_input("Edge (%)", 0.0, 100.0, 15.0, 0.1)
     k_opts = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
-    k_sel = st.sidebar.radio("Kelly Multiplier", list(k_opts.keys()), index=2, horizontal=True)
+    k_sel = st.sidebar.radio("Multiplier", list(k_opts.keys()), index=2, horizontal=True)
     
     dec_odds = american_to_decimal(input_odds)
     b = dec_odds - 1
@@ -139,7 +155,7 @@ if st.session_state["authentication_status"]:
     suggested_stake = round(full_k * k_opts[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. MAIN APP CONTENT ---
+    # --- 7. MAIN TABS ---
     tabs = st.tabs(["📝 Log New Bet", "📊 Dashboard", "🗄️ History"])
 
     with tabs[0]:
@@ -173,7 +189,7 @@ if st.session_state["authentication_status"]:
     with tabs[1]:
         if not df.empty:
             total_profit = df['Profit'].sum()
-            m1, m2, m3 = st.columns(3)
+            m1, m2 = st.columns(2)
             m1.metric("Total P/L", f"${total_profit:,.2f}")
             m2.metric("Total Bets", len(df))
             
@@ -182,7 +198,7 @@ if st.session_state["authentication_status"]:
             fig = px.line(filtered_df, x='Date', y='Cumulative Profit', title="Profit Trend", markers=True)
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No data logged yet.")
+            st.info("No data yet.")
 
     with tabs[2]:
         st.subheader("🏟️ Active Wagers")
