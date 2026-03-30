@@ -3,3 +3,4 @@ pandas
 plotly
 gspread
 google-auth
+streamlit-authenticator
