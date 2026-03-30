@@ -9,3 +9,8 @@ dropdowns.json
 
 # Ignore Mac system files
 .DS_Store
+
+venv/
+.venv/
+env/
+__pycache__/
