@@ -24,14 +24,10 @@ sheet = init_gsheets()
 # --- 3. SMART HELPER FUNCTIONS ---
 def get_ws_smart(sheet, name):
     """Finds a worksheet regardless of case or trailing spaces."""
-    # This pulls every single tab name from your Google Sheet to compare
     all_ws = {ws.title.lower().strip(): ws for ws in sheet.worksheets()}
     target = name.lower().strip()
-    
     if target in all_ws:
         return all_ws[target]
-    
-    # If it fails, this will tell you exactly what tabs the computer found
     st.error(f"Tab Not Found: '{target}'. I only found: {list(all_ws.keys())}")
     st.stop()
 
@@ -97,7 +93,7 @@ def american_to_decimal(odds):
     if odds > 0: return (odds / 100) + 1
     return (100 / abs(odds)) + 1
 
-# --- 4. AUTHENTICATION & CHROME POPUP FIX ---
+# --- 4. AUTHENTICATION ---
 credentials = load_credentials()
 authenticator = stauth.Authenticate(
     credentials,
@@ -106,7 +102,6 @@ authenticator = stauth.Authenticate(
     cookie_expiry_days=30
 )
 
-# Container to wipe the login form
 login_placeholder = st.empty()
 
 if not st.session_state.get("authentication_status"):
@@ -114,17 +109,15 @@ if not st.session_state.get("authentication_status"):
         authenticator.login(location='main')
 
 if st.session_state["authentication_status"]:
-    # Wipe the login form from the browser's memory
     login_placeholder.empty()
 
-    # THE CHROME KILLER: A "Gate" button to break focus
+    # Success Gate (No balloons!)
     if 'dashboard_entered' not in st.session_state:
-        st.balloons()
-        st.success(f"Successfully logged in as {st.session_state['name']}!")
+        st.success(f"Logged in as {st.session_state['name']}")
         if st.button("🚀 Enter Dashboard", use_container_width=True):
             st.session_state['dashboard_entered'] = True
             st.rerun()
-        st.stop() # Wait here until they click
+        st.stop()
 
     # --- 5. LOGGED IN SESSION SETUP ---
     username = st.session_state["username"]
