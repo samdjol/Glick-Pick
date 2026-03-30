@@ -6,7 +6,6 @@ import json
 import gspread
 from google.oauth2.service_account import Credentials
 import streamlit_authenticator as stauth
-import streamlit.components.v1 as components
 
 # --- 1. PAGE CONFIG ---
 st.set_page_config(page_title="Glick Pick Tracker", layout="wide")
@@ -36,7 +35,6 @@ def load_credentials():
     return credentials
 
 def load_data(user_prefix):
-    # This uses the 'bilouncaged' lowercase prefix we debugged earlier
     try:
         ws = sheet.worksheet(f"{user_prefix}_history")
         data = ws.get_all_records()
@@ -85,43 +83,61 @@ def american_to_decimal(odds):
     if odds > 0: return (odds / 100) + 1
     return (100 / abs(odds)) + 1
 
-# --- 4. AUTHENTICATION & BROWSER REFRESH ---
+# --- 4. AUTHENTICATION ---
 credentials = load_credentials()
 authenticator = stauth.Authenticate(
     credentials,
     "bet_tracker_cookie",
-    "random_key_999",
+    "random_key_abc_123", # Change this to any string to reset all cookies
     cookie_expiry_days=30
 )
 
-login_box = st.empty()
-with login_box.container():
-    authenticator.login(location='main')
+# Use st.empty to allow us to completely clear the login form
+login_container = st.empty()
 
+# If not logged in, show the login form inside the container
+if not st.session_state.get("authentication_status"):
+    with login_container.container():
+        authenticator.login(location='main')
+
+# Check status again after the login attempt
 if st.session_state["authentication_status"]:
-    # HARD REFRESH: This is the ONLY way to kill the Chrome/iCloud popup
-    if "needs_refresh" not in st.session_state:
-        st.session_state["needs_refresh"] = True
-        login_box.empty()
-        # Injects JS to force Chrome to physically reload the tab
-        components.html('<script>window.parent.location.reload();</script>', height=0)
-        st.stop()
+    # 1. CLEAR THE LOGIN UI IMMEDIATELY
+    login_container.empty()
 
-    # --- 5. LOGGED IN SESSION SETUP ---
+    # 2. GET USER INFO
     username = st.session_state["username"]
     name = st.session_state["name"]
 
+    # 3. SETUP SESSION DATA
     if 'bankroll' not in st.session_state:
         st.session_state.bankroll = load_bankroll(username)
 
     df = load_data(username)
-    
-    # --- 6. SIDEBAR ---
+    today = datetime.date.today()
+    total_profit_today = 0.0
+    if not df.empty:
+        df['Date'] = pd.to_datetime(df['Date']).dt.date
+        total_profit_today = df[df['Date'] == today]['Profit'].sum()
+
+    # --- 5. SIDEBAR ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.title(f"Welcome, {name}")
-    st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
+    st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}", f"{total_profit_today:,.2f}")
 
-    # Kelly Calculator Logic
+    with st.sidebar.expander("⚙️ Adjust Balance"):
+        bankroll_action = st.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
+        if bankroll_action == "Add/Remove":
+            adj = st.number_input("Amount ($)", value=0.0, step=10.0)
+            if st.button("Update Balance"):
+                update_bankroll(adj, username)
+                st.rerun()
+        else:
+            new_val = st.number_input("Exact ($)", value=float(st.session_state.bankroll))
+            if st.button("Set Balance"):
+                set_bankroll(new_val, username)
+                st.rerun()
+
     st.sidebar.divider()
     st.sidebar.header("🧮 Kelly Calculator")
     if 'odds_input' not in st.session_state: st.session_state.odds_input = -110
@@ -134,10 +150,11 @@ if st.session_state["authentication_status"]:
     dec_odds = american_to_decimal(input_odds)
     b = dec_odds - 1
     full_k = (input_edge_percent/100) / b if b != 0 else 0
-    suggested_stake = round(full_k * k_opts[k_sel] * st.session_state.bankroll, 2)
+    raw_stake = full_k * k_opts[k_sel] * st.session_state.bankroll
+    suggested_stake = round(raw_stake, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 7. MAIN TABS ---
+    # --- 6. MAIN TABS ---
     tabs = st.tabs(["📝 Log New Bet", "📊 Dashboard", "🗄️ History"])
 
     with tabs[0]:
