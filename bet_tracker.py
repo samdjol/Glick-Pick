@@ -105,6 +105,12 @@ authenticator = stauth.Authenticate(
 authenticator.login(location='main')
 
 if st.session_state["authentication_status"]:
+    # If the user just logged in and we haven't refreshed yet, force a rerun
+    # This 'cleans' the browser state and dismisses iCloud/Chrome password managers
+    if 'logged_in' not in st.session_state:
+        st.session_state['logged_in'] = True
+        st.rerun()
+        
     # --- 5. LOGGED IN SESSION SETUP ---
     username = st.session_state["username"]
     name = st.session_state["name"]
