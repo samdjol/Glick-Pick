@@ -7,7 +7,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import streamlit_authenticator as stauth
 
-# --- 1. PAGE CONFIG ---
+# --- 1. PAGE CONFIG (MUST BE FIRST) ---
 st.set_page_config(page_title="Glick Pick Tracker", layout="wide")
 
 # --- 2. GOOGLE SHEETS CONNECTION ---
@@ -21,7 +21,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. DATABASE FUNCTIONS (USER-SPECIFIC) ---
+# --- 3. HELPER FUNCTIONS ---
 def load_credentials():
     ws = sheet.worksheet("Credentials")
     df = pd.DataFrame(ws.get_all_records())
@@ -86,30 +86,34 @@ def handle_odds_change():
     if st.session_state.odds_input == -99: st.session_state.odds_input = 100
     elif st.session_state.odds_input == 99: st.session_state.odds_input = -100
 
-# --- 4. AUTHENTICATION UI ---
+# --- 4. AUTHENTICATION ---
 credentials = load_credentials()
 authenticator = stauth.Authenticate(
     credentials,
     "bet_tracker_cookie",
-    "random_key_123",
+    "random_signature_key",
     cookie_expiry_days=30
 )
 
-name, authentication_status, username = authenticator.login(location='main')
+# Render login - in v0.3.0+ this only returns status
+authenticator.login(location='main')
 
-if authentication_status:
-    # --- 5. INITIALIZE USER SESSION ---
+if st.session_state["authentication_status"]:
+    # --- 5. LOGGED IN SESSION SETUP ---
+    username = st.session_state["username"]
+    name = st.session_state["name"]
+
     if 'bankroll' not in st.session_state:
         st.session_state.bankroll = load_bankroll(username)
 
     df = load_data(username)
-    today = pd.to_datetime(datetime.date.today())
+    today = datetime.date.today()
     total_profit_today = 0.0
     if not df.empty:
-        df['Date'] = pd.to_datetime(df['Date'], format='mixed')
-        total_profit_today = df[df['Date'].dt.date == today.date()]['Profit'].sum()
+        df['Date'] = pd.to_datetime(df['Date']).dt.date
+        total_profit_today = df[df['Date'] == today]['Profit'].sum()
 
-    # --- 6. SIDEBAR ---
+    # --- 6. SIDEBAR UI ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.title(f"Welcome, {name}")
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}", f"{total_profit_today:,.2f}")
@@ -142,7 +146,7 @@ if authentication_status:
     full_k = input_edge / b if b != 0 else 0
     raw_stake = full_k * k_opts[k_sel] * st.session_state.bankroll
     suggested_stake = round(raw_stake, 2)
-    st.sidebar.metric(f"Suggested Stake", f"${suggested_stake:,.2f}")
+    st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
     # --- 7. MAIN TABS ---
     tabs = st.tabs(["📝 Log New Bet", "📊 Dashboard", "🗄️ History"])
@@ -155,7 +159,6 @@ if authentication_status:
             date = c1.date_input("Date", datetime.date.today())
             book = c2.selectbox("Sportsbook", dropdowns["books"])
             state = c3.selectbox("State", dropdowns["states"])
-            
             c4, c5, c6 = st.columns(3)
             event = c4.text_input("Event / Matchup")
             final_stake = c5.number_input("Actual Stake ($)", value=float(suggested_stake))
@@ -181,13 +184,11 @@ if authentication_status:
             with mc1:
                 nb = st.text_input("New Book")
                 if st.button("➕ Add Book") and nb:
-                    dropdowns["books"].append(nb)
-                    save_dropdowns(dropdowns); st.rerun()
+                    dropdowns["books"].append(nb); save_dropdowns(dropdowns); st.rerun()
             with mc2:
                 ns = st.text_input("New State")
                 if st.button("➕ Add State") and ns:
-                    dropdowns["states"].append(ns)
-                    save_dropdowns(dropdowns); st.rerun()
+                    dropdowns["states"].append(ns); save_dropdowns(dropdowns); st.rerun()
 
     with tabs[1]:
         if not df.empty:
@@ -226,7 +227,7 @@ if authentication_status:
         st.subheader("📜 History")
         st.dataframe(df[df['Result'] != 'Pending'].sort_values('Date', ascending=False), use_container_width=True, hide_index=True)
 
-elif authentication_status == False:
+elif st.session_state["authentication_status"] is False:
     st.error("Username/password is incorrect")
-elif authentication_status == None:
+elif st.session_state["authentication_status"] is None:
     st.warning("Please enter your username and password")
