@@ -6,8 +6,9 @@ import json
 import gspread
 from google.oauth2.service_account import Credentials
 import streamlit_authenticator as stauth
+import streamlit.components.v1 as components
 
-# --- 1. PAGE CONFIG (MUST BE ABSOLUTELY FIRST) ---
+# --- 1. PAGE CONFIG ---
 st.set_page_config(page_title="Glick Pick Tracker", layout="wide")
 
 # --- 2. GOOGLE SHEETS CONNECTION ---
@@ -35,37 +36,34 @@ def load_credentials():
     return credentials
 
 def load_data(user_prefix):
-    # Case-sensitive check: ensure your tabs are lowercase if you use lowercase here
-    ws = sheet.worksheet(f"{user_prefix}_History")
+    # This uses the 'bilouncaged' lowercase prefix we debugged earlier
     try:
+        ws = sheet.worksheet(f"{user_prefix}_history")
         data = ws.get_all_records()
-        if not data:
-            return pd.DataFrame(columns=['Date', 'Book', 'State', 'Event', 'Odds', 'Edge', 'Stake', 'Result', 'Profit'])
-        return pd.DataFrame(data)
-    except Exception:
-        # Safety net for totally blank sheets
+        return pd.DataFrame(data) if data else pd.DataFrame(columns=['Date', 'Book', 'State', 'Event', 'Odds', 'Edge', 'Stake', 'Result', 'Profit'])
+    except:
         return pd.DataFrame(columns=['Date', 'Book', 'State', 'Event', 'Odds', 'Edge', 'Stake', 'Result', 'Profit'])
 
 def save_data(df, user_prefix):
-    ws = sheet.worksheet(f"{user_prefix}_History")
+    ws = sheet.worksheet(f"{user_prefix}_history")
     ws.clear()
     df_save = df.copy()
     df_save['Date'] = pd.to_datetime(df_save['Date']).dt.strftime('%Y-%m-%d')
     ws.update(values=[df_save.columns.values.tolist()] + df_save.fillna('').values.tolist(), range_name='A1')
 
 def load_bankroll(user_prefix):
-    ws = sheet.worksheet(f"{user_prefix}_Bankroll")
+    ws = sheet.worksheet(f"{user_prefix}_bankroll")
     val = ws.acell('B1').value
     return float(val) if val else 1000.0
 
 def update_bankroll(amount, user_prefix):
     st.session_state.bankroll += amount
-    ws = sheet.worksheet(f"{user_prefix}_Bankroll")
+    ws = sheet.worksheet(f"{user_prefix}_bankroll")
     ws.update_acell('B1', st.session_state.bankroll)
 
 def set_bankroll(amount, user_prefix):
     st.session_state.bankroll = amount
-    ws = sheet.worksheet(f"{user_prefix}_Bankroll")
+    ws = sheet.worksheet(f"{user_prefix}_bankroll")
     ws.update_acell('B1', amount)
 
 def load_dropdowns():
@@ -87,80 +85,59 @@ def american_to_decimal(odds):
     if odds > 0: return (odds / 100) + 1
     return (100 / abs(odds)) + 1
 
-def handle_odds_change():
-    if st.session_state.odds_input == -99: st.session_state.odds_input = 100
-    elif st.session_state.odds_input == 99: st.session_state.odds_input = -100
-
-# --- 4. AUTHENTICATION (THE "CLEAN SLATE" VERSION) ---
+# --- 4. AUTHENTICATION & BROWSER REFRESH ---
 credentials = load_credentials()
 authenticator = stauth.Authenticate(
     credentials,
     "bet_tracker_cookie",
-    "random_signature_key",
+    "random_key_999",
     cookie_expiry_days=30
 )
 
-# Placeholder to wipe the login form from Safari's memory after success
-login_placeholder = st.empty()
-
-with login_placeholder.container():
+login_box = st.empty()
+with login_box.container():
     authenticator.login(location='main')
 
 if st.session_state["authentication_status"]:
-    # 1. Kill the login form immediately to dismiss iCloud
-    login_placeholder.empty()
+    # HARD REFRESH: This is the ONLY way to kill the Chrome/iCloud popup
+    if "needs_refresh" not in st.session_state:
+        st.session_state["needs_refresh"] = True
+        login_box.empty()
+        # Injects JS to force Chrome to physically reload the tab
+        components.html('<script>window.parent.location.reload();</script>', height=0)
+        st.stop()
 
-    # 2. Get User Info
+    # --- 5. LOGGED IN SESSION SETUP ---
     username = st.session_state["username"]
     name = st.session_state["name"]
 
-    # 3. Initialize Session Data
     if 'bankroll' not in st.session_state:
         st.session_state.bankroll = load_bankroll(username)
 
     df = load_data(username)
-    today = datetime.date.today()
-    total_profit_today = 0.0
-    if not df.empty:
-        df['Date'] = pd.to_datetime(df['Date']).dt.date
-        total_profit_today = df[df['Date'] == today]['Profit'].sum()
-
-    # --- 5. SIDEBAR UI ---
+    
+    # --- 6. SIDEBAR ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.title(f"Welcome, {name}")
-    st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}", f"{total_profit_today:,.2f}")
+    st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
 
-    with st.sidebar.expander("⚙️ Adjust Balance"):
-        bankroll_action = st.sidebar.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
-        if bankroll_action == "Add/Remove":
-            adj = st.sidebar.number_input("Amount ($)", value=0.0, step=10.0)
-            if st.sidebar.button("Update Balance"):
-                update_bankroll(adj, username)
-                st.rerun()
-        else:
-            new_val = st.sidebar.number_input("Exact ($)", value=float(st.session_state.bankroll))
-            if st.sidebar.button("Set Balance"):
-                set_bankroll(new_val, username)
-                st.rerun()
-
+    # Kelly Calculator Logic
     st.sidebar.divider()
     st.sidebar.header("🧮 Kelly Calculator")
     if 'odds_input' not in st.session_state: st.session_state.odds_input = -110
-    input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input", on_change=handle_odds_change)
+    input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input")
     input_edge_percent = st.sidebar.number_input("Edge (%)", 0.0, 100.0, 15.0, 0.1)
-    input_edge = input_edge_percent / 100
     
     k_opts = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
     k_sel = st.sidebar.radio("Kelly Multiplier", list(k_opts.keys()), index=2, horizontal=True)
     
     dec_odds = american_to_decimal(input_odds)
     b = dec_odds - 1
-    full_k = input_edge / b if b != 0 else 0
-    raw_stake = full_k * k_opts[k_sel] * st.session_state.bankroll
-    suggested_stake = round(raw_stake, 2)
+    full_k = (input_edge_percent/100) / b if b != 0 else 0
+    suggested_stake = round(full_k * k_opts[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. MAIN TABS ---
+    # --- 7. MAIN TABS ---
     tabs = st.tabs(["📝 Log New Bet", "📊 Dashboard", "🗄️ History"])
 
     with tabs[0]:
@@ -184,39 +161,24 @@ if st.session_state["authentication_status"]:
                     if result == "Win": profit = round(final_stake * (dec_odds - 1), 2)
                     elif result == "Loss": profit = -final_stake
                     
-                    new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": input_odds, "Edge": input_edge, "Stake": final_stake, "Result": result, "Profit": profit}
+                    new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": input_odds, "Edge": input_edge_percent/100, "Stake": final_stake, "Result": result, "Profit": profit}
                     df_new = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                     save_data(df_new, username)
                     if profit != 0: update_bankroll(profit, username)
                     st.toast("Bet Logged!", icon="✅")
                     st.rerun()
 
-        with st.expander("⚙️ Manage Sportsbooks & States"):
-            mc1, mc2 = st.columns(2)
-            with mc1:
-                nb = st.text_input("New Book")
-                if st.button("➕ Add Book") and nb:
-                    dropdowns["books"].append(nb); save_dropdowns(dropdowns); st.rerun()
-            with mc2:
-                ns = st.text_input("New State")
-                if st.button("➕ Add State") and ns:
-                    dropdowns["states"].append(ns); save_dropdowns(dropdowns); st.rerun()
-
     with tabs[1]:
         if not df.empty:
             total_profit = df['Profit'].sum()
-            roi = (total_profit / df['Stake'].sum()) * 100 if df['Stake'].sum() > 0 else 0
             m1, m2, m3 = st.columns(3)
             m1.metric("Total P/L", f"${total_profit:,.2f}")
-            m2.metric("ROI %", f"{roi:.2f}%")
-            m3.metric("Total Bets", len(df))
+            m2.metric("Total Bets", len(df))
             
             filtered_df = df.sort_values('Date')
             filtered_df['Cumulative Profit'] = filtered_df['Profit'].cumsum()
-            fig = px.line(filtered_df, x='Date', y='Cumulative Profit', title="Profit Trend", line_shape="hv", markers=True)
+            fig = px.line(filtered_df, x='Date', y='Cumulative Profit', title="Profit Trend", markers=True)
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No data yet.")
 
     with tabs[2]:
         st.subheader("🏟️ Active Wagers")
@@ -224,7 +186,7 @@ if st.session_state["authentication_status"]:
         for i, row in pending.iterrows():
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([3, 1, 1, 0.5])
-                col1.write(f"**{row['Event']}** | {row['Book']} | {row['Odds']}")
+                col1.write(f"**{row['Event']}** | {row['Book']}")
                 if col2.button("✅ Win", key=f"w{i}"):
                     p = row['Stake'] * (american_to_decimal(row['Odds']) - 1)
                     df.at[i, 'Result'], df.at[i, 'Profit'] = 'Win', round(p, 2)
@@ -235,11 +197,5 @@ if st.session_state["authentication_status"]:
                 if col4.button("🗑️", key=f"d{i}"):
                     df = df.drop(i); save_data(df, username); st.rerun()
 
-        st.divider()
-        st.subheader("📜 History")
-        st.dataframe(df[df['Result'] != 'Pending'].sort_values('Date', ascending=False), use_container_width=True, hide_index=True)
-
 elif st.session_state["authentication_status"] is False:
     st.error("Username/password is incorrect")
-elif st.session_state["authentication_status"] is None:
-    st.warning("Please enter your username and password")
