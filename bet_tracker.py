@@ -36,10 +36,16 @@ def load_credentials():
 
 def load_data(user_prefix):
     ws = sheet.worksheet(f"{user_prefix}_History")
-    data = ws.get_all_records()
-    if not data:
+    try:
+        data = ws.get_all_records()
+        if not data:
+            # If the sheet has headers but no rows yet
+            return pd.DataFrame(columns=['Date', 'Book', 'State', 'Event', 'Odds', 'Edge', 'Stake', 'Result', 'Profit'])
+        return pd.DataFrame(data)
+    except Exception as e:
+        # If the sheet is TOTALLY blank (no headers), this prevents a crash
+        st.warning(f"Note: '{user_prefix}_History' is empty. Please add headers if logging fails.")
         return pd.DataFrame(columns=['Date', 'Book', 'State', 'Event', 'Odds', 'Edge', 'Stake', 'Result', 'Profit'])
-    return pd.DataFrame(data)
 
 def save_data(df, user_prefix):
     ws = sheet.worksheet(f"{user_prefix}_History")
