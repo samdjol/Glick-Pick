@@ -49,6 +49,9 @@ def save_data(df, user_prefix):
     ws.update(values=[df_save.columns.values.tolist()] + df_save.fillna('').values.tolist(), range_name='A1')
 
 def load_bankroll(user_prefix):
+    # ADD THIS LINE TO DEBUG:
+    st.write(f"DEBUG: Searching for tab named: '{user_prefix}_Bankroll'")
+    
     ws = sheet.worksheet(f"{user_prefix}_Bankroll")
     val = ws.acell('B1').value
     return float(val) if val else 1000.0
