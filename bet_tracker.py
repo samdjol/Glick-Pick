@@ -23,12 +23,10 @@ sheet = init_gsheets()
 
 # --- 3. SMART HELPER FUNCTIONS ---
 def get_ws_smart(sheet, name):
-    """Finds a worksheet regardless of case or trailing spaces."""
     all_ws = {ws.title.lower().strip(): ws for ws in sheet.worksheets()}
     target = name.lower().strip()
-    if target in all_ws:
-        return all_ws[target]
-    st.error(f"Tab Not Found: '{target}'. I only found: {list(all_ws.keys())}")
+    if target in all_ws: return all_ws[target]
+    st.error(f"Tab Not Found: '{target}'. Found: {list(all_ws.keys())}")
     st.stop()
 
 def load_credentials():
@@ -38,9 +36,7 @@ def load_credentials():
     for _, row in df.iterrows():
         user = str(row['Username']).strip()
         credentials["usernames"][user] = {
-            "name": str(row['Name']),
-            "password": str(row['Password']),
-            "email": str(row['Email'])
+            "name": str(row['Name']), "password": str(row['Password']), "email": str(row['Email'])
         }
     return credentials
 
@@ -95,23 +91,15 @@ def american_to_decimal(odds):
 
 # --- 4. AUTHENTICATION ---
 credentials = load_credentials()
-authenticator = stauth.Authenticate(
-    credentials,
-    "bet_tracker_cookie",
-    "glick_pick_key_v2",
-    cookie_expiry_days=30
-)
+authenticator = stauth.Authenticate(credentials, "bet_tracker_cookie", "secure_v3", cookie_expiry_days=30)
 
 login_placeholder = st.empty()
-
 if not st.session_state.get("authentication_status"):
     with login_placeholder.container():
         authenticator.login(location='main')
 
 if st.session_state["authentication_status"]:
     login_placeholder.empty()
-
-    # Success Gate (No balloons!)
     if 'dashboard_entered' not in st.session_state:
         st.success(f"Logged in as {st.session_state['name']}")
         if st.button("🚀 Enter Dashboard", use_container_width=True):
@@ -119,36 +107,43 @@ if st.session_state["authentication_status"]:
             st.rerun()
         st.stop()
 
-    # --- 5. LOGGED IN SESSION SETUP ---
+    # --- SESSION SETUP ---
     username = st.session_state["username"]
     name = st.session_state["name"]
-
-    if 'bankroll' not in st.session_state:
-        st.session_state.bankroll = load_bankroll(username)
-
+    if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     df = load_data(username)
-    
-    # --- 6. SIDEBAR ---
+
+    # --- 5. SIDEBAR ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.title(f"Welcome, {name}")
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
 
-    # Kelly Calculator
+    with st.sidebar.expander("⚙️ Adjust Balance"):
+        action = st.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
+        if action == "Add/Remove":
+            adj = st.number_input("Amount ($)", value=0.0, step=10.0)
+            if st.button("Update Balance"):
+                update_bankroll(adj, username); st.rerun()
+        else:
+            new_val = st.number_input("Exact ($)", value=float(st.session_state.bankroll))
+            if st.button("Set Balance"):
+                set_bankroll(new_val, username); st.rerun()
+
     st.sidebar.divider()
     st.sidebar.header("🧮 Kelly Calculator")
     if 'odds_input' not in st.session_state: st.session_state.odds_input = -110
     input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input")
-    input_edge_percent = st.sidebar.number_input("Edge (%)", 0.0, 100.0, 15.0, 0.1)
+    edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, 15.0, 0.1)
     k_opts = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
     k_sel = st.sidebar.radio("Multiplier", list(k_opts.keys()), index=2, horizontal=True)
     
     dec_odds = american_to_decimal(input_odds)
     b = dec_odds - 1
-    full_k = (input_edge_percent/100) / b if b != 0 else 0
+    full_k = (edge_pct/100) / b if b != 0 else 0
     suggested_stake = round(full_k * k_opts[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 7. MAIN TABS ---
+    # --- 6. MAIN TABS ---
     tabs = st.tabs(["📝 Log New Bet", "📊 Dashboard", "🗄️ History"])
 
     with tabs[0]:
@@ -165,33 +160,34 @@ if st.session_state["authentication_status"]:
             result = c6.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
             
             if st.form_submit_button("Save Bet to Database"):
-                if not event.strip():
-                    st.error("Event name required.")
-                else:
-                    profit = 0
-                    if result == "Win": profit = round(final_stake * (dec_odds - 1), 2)
-                    elif result == "Loss": profit = -final_stake
-                    
-                    new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": input_odds, "Edge": input_edge_percent/100, "Stake": final_stake, "Result": result, "Profit": profit}
+                if event.strip():
+                    p = 0
+                    if result == "Win": p = round(final_stake * (dec_odds - 1), 2)
+                    elif result == "Loss": p = -final_stake
+                    new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": input_odds, "Edge": edge_pct/100, "Stake": final_stake, "Result": result, "Profit": p}
                     df_new = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                     save_data(df_new, username)
-                    if profit != 0: update_bankroll(profit, username)
-                    st.toast("Bet Logged!", icon="✅")
-                    st.rerun()
+                    if p != 0: update_bankroll(p, username)
+                    st.toast("Logged!", icon="✅"); st.rerun()
+
+        with st.expander("⚙️ Manage Sportsbooks & States"):
+            mc1, mc2 = st.columns(2)
+            with mc1:
+                nb = st.text_input("New Book")
+                if st.button("➕ Add Book") and nb:
+                    dropdowns["books"].append(nb); save_dropdowns(dropdowns); st.rerun()
+            with mc2:
+                ns = st.text_input("New State")
+                if st.button("➕ Add State") and ns:
+                    dropdowns["states"].append(ns); save_dropdowns(dropdowns); st.rerun()
 
     with tabs[1]:
         if not df.empty:
-            total_profit = df['Profit'].sum()
-            m1, m2 = st.columns(2)
-            m1.metric("Total P/L", f"${total_profit:,.2f}")
-            m2.metric("Total Bets", len(df))
-            
+            st.metric("Total P/L", f"${df['Profit'].sum():,.2f}")
             filtered_df = df.sort_values('Date')
             filtered_df['Cumulative Profit'] = filtered_df['Profit'].cumsum()
             fig = px.line(filtered_df, x='Date', y='Cumulative Profit', title="Profit Trend", markers=True)
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No data yet.")
 
     with tabs[2]:
         st.subheader("🏟️ Active Wagers")
@@ -210,5 +206,21 @@ if st.session_state["authentication_status"]:
                 if col4.button("🗑️", key=f"d{i}"):
                     df = df.drop(i); save_data(df, username); st.rerun()
 
+        st.divider()
+        st.subheader("📜 History")
+        settled = df[df['Result'] != 'Pending'].sort_values('Date', ascending=False)
+        st.dataframe(settled, use_container_width=True, hide_index=True)
+        
+        with st.expander("🗑️ Delete/Refund a Settled Bet"):
+            # Create labels for the selectbox
+            settled_list = {f"{r['Date']} | {r['Event']} (${r['Profit']})": idx for idx, r in settled.iterrows()}
+            target = st.selectbox("Select bet to remove:", [""] + list(settled_list.keys()))
+            if st.button("Delete & Reverse Bankroll") and target:
+                idx_to_del = settled_list[target]
+                rev_profit = df.at[idx_to_del, 'Profit']
+                update_bankroll(-rev_profit, username)
+                df = df.drop(idx_to_del)
+                save_data(df, username); st.rerun()
+
 elif st.session_state["authentication_status"] is False:
-    st.error("Username/password is incorrect")
+    st.error("Incorrect credentials")
