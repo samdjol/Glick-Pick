@@ -1,0 +1,11 @@
+# Ignore Streamlit secrets
+.streamlit/
+
+# Ignore local database files so they don't overwrite the cloud
+bankroll.txt
+bet_history.csv
+dropdowns.json
+*.csv
+
+# Ignore Mac system files
+.DS_Store
