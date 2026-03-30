@@ -6,6 +6,7 @@ bankroll.txt
 bet_history.csv
 dropdowns.json
 *.csv
+hasher.py
 
 # Ignore Mac system files
 .DS_Store
