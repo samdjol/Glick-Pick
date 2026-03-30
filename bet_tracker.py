@@ -197,11 +197,22 @@ with tabs[0]:
                 df_current = load_data()
                 df_current = pd.concat([df_current, pd.DataFrame([new_data])], ignore_index=True)
                 save_data(df_current)
-                st.success(f"Successfully logged {event} in {state} on {book}!")
+                
+                # --- AUTOMATIC UPDATES ---
+                # Update bankroll if the bet was already settled upon logging
+                if profit != 0:
+                    update_bankroll(profit)
+                
+                # Use a toast so the message survives the rerun
+                st.toast(f"Successfully logged {event} on {book}!", icon="✅")
+                
+                # Force app to refresh so Dashboard/History update immediately
+                st.rerun()
 
     with st.expander("⚙️ Manage Sportsbooks & States"):
         mc1, mc2 = st.columns(2)
         with mc1:
+            st.write("**Sportsbooks**")
             new_book = st.text_input("New Sportsbook Name")
             if st.button("➕ Add Book"):
                 if new_book and new_book not in dropdowns["books"]:
@@ -217,6 +228,7 @@ with tabs[0]:
                     st.rerun()
                     
         with mc2:
+            st.write("**States**")
             new_state = st.text_input("New State Name")
             if st.button("➕ Add State"):
                 if new_state and new_state not in dropdowns["states"]:
