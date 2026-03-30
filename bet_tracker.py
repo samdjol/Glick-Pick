@@ -7,7 +7,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import streamlit_authenticator as stauth
 
-# --- 1. PAGE CONFIG (MUST BE FIRST) ---
+# --- 1. PAGE CONFIG (MUST BE ABSOLUTELY FIRST) ---
 st.set_page_config(page_title="Glick Pick Tracker", layout="wide")
 
 # --- 2. GOOGLE SHEETS CONNECTION ---
@@ -35,16 +35,15 @@ def load_credentials():
     return credentials
 
 def load_data(user_prefix):
+    # Case-sensitive check: ensure your tabs are lowercase if you use lowercase here
     ws = sheet.worksheet(f"{user_prefix}_History")
     try:
         data = ws.get_all_records()
         if not data:
-            # If the sheet has headers but no rows yet
             return pd.DataFrame(columns=['Date', 'Book', 'State', 'Event', 'Odds', 'Edge', 'Stake', 'Result', 'Profit'])
         return pd.DataFrame(data)
-    except Exception as e:
-        # If the sheet is TOTALLY blank (no headers), this prevents a crash
-        st.warning(f"Note: '{user_prefix}_History' is empty. Please add headers if logging fails.")
+    except Exception:
+        # Safety net for totally blank sheets
         return pd.DataFrame(columns=['Date', 'Book', 'State', 'Event', 'Odds', 'Edge', 'Stake', 'Result', 'Profit'])
 
 def save_data(df, user_prefix):
@@ -92,7 +91,7 @@ def handle_odds_change():
     if st.session_state.odds_input == -99: st.session_state.odds_input = 100
     elif st.session_state.odds_input == 99: st.session_state.odds_input = -100
 
-# --- 4. AUTHENTICATION ---
+# --- 4. AUTHENTICATION (THE "CLEAN SLATE" VERSION) ---
 credentials = load_credentials()
 authenticator = stauth.Authenticate(
     credentials,
@@ -101,20 +100,21 @@ authenticator = stauth.Authenticate(
     cookie_expiry_days=30
 )
 
-# Render login - in v0.3.0+ this only returns status
-authenticator.login(location='main')
+# Placeholder to wipe the login form from Safari's memory after success
+login_placeholder = st.empty()
+
+with login_placeholder.container():
+    authenticator.login(location='main')
 
 if st.session_state["authentication_status"]:
-    # If the user just logged in and we haven't refreshed yet, force a rerun
-    # This 'cleans' the browser state and dismisses iCloud/Chrome password managers
-    if 'logged_in' not in st.session_state:
-        st.session_state['logged_in'] = True
-        st.rerun()
-        
-    # --- 5. LOGGED IN SESSION SETUP ---
+    # 1. Kill the login form immediately to dismiss iCloud
+    login_placeholder.empty()
+
+    # 2. Get User Info
     username = st.session_state["username"]
     name = st.session_state["name"]
 
+    # 3. Initialize Session Data
     if 'bankroll' not in st.session_state:
         st.session_state.bankroll = load_bankroll(username)
 
@@ -125,20 +125,21 @@ if st.session_state["authentication_status"]:
         df['Date'] = pd.to_datetime(df['Date']).dt.date
         total_profit_today = df[df['Date'] == today]['Profit'].sum()
 
-    # --- 6. SIDEBAR UI ---
+    # --- 5. SIDEBAR UI ---
     authenticator.logout('Logout', 'sidebar')
+    st.sidebar.title(f"Welcome, {name}")
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}", f"{total_profit_today:,.2f}")
 
     with st.sidebar.expander("⚙️ Adjust Balance"):
-        bankroll_action = st.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
+        bankroll_action = st.sidebar.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
         if bankroll_action == "Add/Remove":
-            adj = st.number_input("Amount ($)", value=0.0, step=10.0)
-            if st.button("Update Balance"):
+            adj = st.sidebar.number_input("Amount ($)", value=0.0, step=10.0)
+            if st.sidebar.button("Update Balance"):
                 update_bankroll(adj, username)
                 st.rerun()
         else:
-            new_val = st.number_input("Exact ($)", value=float(st.session_state.bankroll))
-            if st.button("Set Balance"):
+            new_val = st.sidebar.number_input("Exact ($)", value=float(st.session_state.bankroll))
+            if st.sidebar.button("Set Balance"):
                 set_bankroll(new_val, username)
                 st.rerun()
 
@@ -159,7 +160,7 @@ if st.session_state["authentication_status"]:
     suggested_stake = round(raw_stake, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 7. MAIN TABS ---
+    # --- 6. MAIN TABS ---
     tabs = st.tabs(["📝 Log New Bet", "📊 Dashboard", "🗄️ History"])
 
     with tabs[0]:
