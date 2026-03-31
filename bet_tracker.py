@@ -6,6 +6,10 @@ import json
 import gspread
 from google.oauth2.service_account import Credentials
 import streamlit_authenticator as stauth
+import datetime
+from zoneinfo import ZoneInfo
+
+NYC_TZ = ZoneInfo("America/New_York")
 
 # --- 1. PAGE CONFIG ---
 st.set_page_config(page_title="Glick Pick Tracker", layout="wide")
@@ -151,7 +155,7 @@ if st.session_state["authentication_status"]:
         dropdowns = load_dropdowns()
         with st.form("bet_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
-            date = c1.date_input("Date", datetime.date.today())
+            date = c1.date_input("Date", datetime.datetime.now(NYC_TZ).date())
             book = c2.selectbox("Sportsbook", dropdowns["books"])
             state = c3.selectbox("State", dropdowns["states"])
             c4, c5, c6 = st.columns(3)
