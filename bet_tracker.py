@@ -24,7 +24,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Fixed for "Direction") ---
+# --- 3. SUPABASE API (Aggressive Over/Under Search) ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -45,10 +45,17 @@ def get_glicks_picks():
         picks = []
         for item in data:
             player = item.get("player_name") or item.get("player") or "Unknown"
-            # FIX: Check for 'direction' or 'call_type' which usually holds OVER/UNDER
-            call = str(item.get("direction") or item.get("call") or "").upper()
             line = str(item.get("line", ""))
             market = item.get("market", "") or item.get("prop", "")
+            
+            # --- OVER/UNDER SEARCH LOGIC ---
+            # We look through every value in the dictionary for "OVER" or "UNDER"
+            call = ""
+            for val in item.values():
+                val_str = str(val).upper()
+                if val_str in ["OVER", "UNDER"]:
+                    call = val_str
+                    break
             
             picks.append({"Event": f"{player}: {call} {line} {market}"})
         return picks
@@ -162,32 +169,27 @@ if st.session_state["authentication_status"]:
     suggested_stake = round(full_k * k_opts[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. STATEFUL NAVIGATION (The Tab Switcher) ---
+    # --- 6. NAV-BAR (Fixed for Auto-Switching) ---
     nav_labels = ["🎯 Glick's Picks", "📝 Log New Bet", "📊 Dashboard", "🗄️ History"]
     
-    # Initialize the active page if not set
-    if 'active_page' not in st.session_state:
-        st.session_state.active_page = nav_labels[0]
+    # Pre-set the session state for the widget if it's missing
+    if 'nav_bar' not in st.session_state:
+        st.session_state['nav_bar'] = nav_labels[0]
 
-    # Create a navigation bar that acts like tabs
-    active_tab = st.segmented_control(
+    active_page = st.segmented_control(
         "Navigation", 
         nav_labels, 
         selection_mode="single", 
-        default=st.session_state.active_page,
-        key="nav_bar",
+        key="nav_bar", # This key handles the state
         label_visibility="collapsed"
     )
-
-    # Sync session state to the control
-    st.session_state.active_page = active_tab
 
     st.divider()
 
     # --- 7. TAB CONTENT ---
     
-    if st.session_state.active_page == "🎯 Glick's Picks":
-        st.subheader("Latest Picks from Glick's Picks")
+    if active_page == "🎯 Glick's Picks":
+        st.subheader("Latest Picks from Supabase")
         available_picks = get_glicks_picks()
         if not available_picks:
             st.info("No picks found for today.")
@@ -198,16 +200,16 @@ if st.session_state["authentication_status"]:
                     cola.write(f"**{p['Event']}**")
                     cola.caption("Using Odds & Edge from your Sidebar settings.")
                     if colb.button("Track", key=f"api_{p['Event']}", width='stretch'):
-                        # 1. Store the event name
+                        # 1. Autofill the event
                         st.session_state.autofill_event = p['Event']
-                        # 2. FORCE SWITCH TO THE LOG PAGE
-                        st.session_state.active_page = "📝 Log New Bet"
-                        st.toast(f"Pushed {p['Event']} to Log!")
+                        # 2. Update the WIDGET key specifically to switch tabs
+                        st.session_state["nav_bar"] = "📝 Log New Bet"
                         st.rerun()
 
-    elif st.session_state.active_page == "📝 Log New Bet":
+    elif active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
+        # Fallback value for the form
         default_event = st.session_state.get('autofill_event', "")
         
         with st.form("bet_form", clear_on_submit=True):
@@ -232,7 +234,7 @@ if st.session_state["authentication_status"]:
                     st.session_state.autofill_event = ""
                     st.toast("Logged!", icon="✅"); st.rerun()
 
-    elif st.session_state.active_page == "📊 Dashboard":
+    elif active_page == "📊 Dashboard":
         if not df.empty:
             st.metric("Total P/L", f"${df['Profit'].sum():,.2f}")
             filtered_df = df.sort_values('Date')
@@ -240,7 +242,7 @@ if st.session_state["authentication_status"]:
             fig = px.line(filtered_df, x='Date', y='Cumulative Profit', title="Profit Trend", markers=True)
             st.plotly_chart(fig, width='stretch')
 
-    elif st.session_state.active_page == "🗄️ History":
+    elif active_page == "🗄️ History":
         st.subheader("🏟️ Active Wagers")
         pending = df[df['Result'] == 'Pending']
         for i, row in pending.iterrows():
