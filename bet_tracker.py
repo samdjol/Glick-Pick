@@ -24,7 +24,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Broad Search for Call) ---
+# --- 3. SUPABASE API (Over/Under Search) ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -45,17 +45,15 @@ def get_glicks_picks():
         picks = []
         for item in data:
             player = item.get("player_name") or item.get("player") or "Unknown"
-            # Explicitly check common database keys for OVER/UNDER
             call = str(item.get("direction") or item.get("call") or item.get("side") or "").upper()
             line = str(item.get("line", ""))
             market = item.get("market") or item.get("prop") or ""
-            
             picks.append({"Event": f"{player}: {call} {line} {market}"})
         return picks
     except:
         return []
 
-# --- 4. HELPER FUNCTIONS ---
+# --- 4. DATA HELPERS ---
 def get_ws_smart(sheet, name):
     all_ws = {ws.title.lower().strip(): ws for ws in sheet.worksheets()}
     target = name.lower().strip()
@@ -99,11 +97,25 @@ def update_bankroll(amount, user_prefix):
     ws = get_ws_smart(sheet, f"{user_prefix}_bankroll")
     ws.update_acell('B1', st.session_state.bankroll)
 
+def set_bankroll(amount, user_prefix):
+    st.session_state.bankroll = amount
+    ws = get_ws_smart(sheet, f"{user_prefix}_bankroll")
+    ws.update_acell('B1', amount)
+
 def load_dropdowns():
     ws = sheet.worksheet("Dropdowns")
     books = ws.col_values(1)[1:]
     states = ws.col_values(2)[1:]
     return {"books": [b for b in books if b.strip()], "states": [s for s in states if s.strip()]}
+
+def save_dropdowns(data):
+    ws = sheet.worksheet("Dropdowns")
+    ws.clear()
+    max_len = max(len(data['books']), len(data['states']))
+    books = data['books'] + [''] * (max_len - len(data['books']))
+    states = data['states'] + [''] * (max_len - len(data['states']))
+    rows = [['Books', 'States']] + [[books[i], states[i]] for i in range(max_len)]
+    ws.update(values=rows, range_name='A1')
 
 def american_to_decimal(odds):
     try:
@@ -135,94 +147,104 @@ if st.session_state["authentication_status"]:
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     df = load_data(username)
 
-    # --- SIDEBAR ---
+    # --- SIDEBAR: REINSTATED BALANCE ADJUSTMENT ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.title(f"Welcome, {name}")
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
 
-    # Kelly Defaults
+    with st.sidebar.expander("⚙️ Adjust Balance"):
+        adj_action = st.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
+        if adj_action == "Add/Remove":
+            adj_val = st.number_input("Amount ($)", value=0.0, step=10.0)
+            if st.button("Update Balance"):
+                update_bankroll(adj_val, username); st.rerun()
+        else:
+            exact_val = st.number_input("Exact ($)", value=float(st.session_state.bankroll))
+            if st.button("Set Balance"):
+                set_bankroll(exact_val, username); st.rerun()
+
+    st.sidebar.divider()
+    st.sidebar.header("🧮 Kelly Calculator")
     if 'odds_input' not in st.session_state: st.session_state.odds_input = -110
     if 'edge_input' not in st.session_state: st.session_state.edge_input = 15.0
-
     input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input")
     edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, step=0.1, key="edge_input")
-    k_opts = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
-    k_sel = st.sidebar.radio("Multiplier", list(k_opts.keys()), index=2, horizontal=True)
+    k_sel = st.sidebar.radio("Multiplier", ["Full", "Half", "Quarter"], index=2, horizontal=True)
+    k_map = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
     
     dec_odds = american_to_decimal(input_odds)
     full_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
-    suggested_stake = round(full_k * k_opts[k_sel] * st.session_state.bankroll, 2)
+    suggested_stake = round(full_k * k_map[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. NAVIGATION CONTROLLER (FIXES THE CRASH) ---
+    # --- 6. NAVIGATION CONTROLLER ---
     nav_labels = ["🎯 Glick's Picks", "📝 Log New Bet", "📊 Dashboard", "🗄️ History"]
-    
-    # Check if a redirect was requested by a button
     if st.session_state.get('redirect_to'):
         st.session_state['nav_bar'] = st.session_state['redirect_to']
-        del st.session_state['redirect_to'] # Clear it so it doesn't loop
-    
-    # Initialize widget key if missing
+        del st.session_state['redirect_to']
     if 'nav_bar' not in st.session_state:
         st.session_state['nav_bar'] = nav_labels[0]
 
-    # Render the nav bar AFTER the check above
-    active_page = st.segmented_control(
-        "Navigation", nav_labels, selection_mode="single", key="nav_bar", label_visibility="collapsed"
-    )
+    active_page = st.segmented_control("Navigation", nav_labels, selection_mode="single", key="nav_bar", label_visibility="collapsed")
     st.divider()
 
-    # --- 7. TAB CONTENT ---
-    
+    # --- 7. CONTENT ---
     if active_page == "🎯 Glick's Picks":
-        st.subheader("Latest Picks from Glick's Picks")
-        available_picks = get_glicks_picks()
-        if not available_picks:
-            st.info("No picks found for today.")
+        st.subheader("Latest Picks")
+        picks = get_glicks_picks()
+        if not picks: st.info("No picks found for today.")
         else:
-            for p in available_picks:
+            for p in picks:
                 with st.container(border=True):
-                    cola, colb = st.columns([4, 1])
-                    cola.write(f"**{p['Event']}**")
-                    cola.caption("Using Odds & Edge from Sidebar settings.")
-                    if colb.button("Track", key=f"api_{p['Event']}", width='stretch'):
+                    ca, cb = st.columns([4, 1])
+                    ca.write(f"**{p['Event']}**")
+                    if cb.button("Track", key=f"api_{p['Event']}", width='stretch'):
                         st.session_state.autofill_event = p['Event']
-                        # Set redirect flag and rerun - the controller above will handle it
                         st.session_state['redirect_to'] = "📝 Log New Bet"
                         st.rerun()
 
     elif active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
-        default_event = st.session_state.get('autofill_event', "")
+        default_ev = st.session_state.get('autofill_event', "")
         with st.form("bet_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             date = c1.date_input("Date", datetime.datetime.now(NYC_TZ).date())
             book = c2.selectbox("Sportsbook", dropdowns["books"])
             state = c3.selectbox("State", dropdowns["states"])
             c4, c5, c6 = st.columns(3)
-            event = c4.text_input("Event / Matchup", value=default_event)
-            final_stake = c5.number_input("Actual Stake ($)", value=float(suggested_stake))
-            result = c6.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
+            event = c4.text_input("Event / Matchup", value=default_ev)
+            stake = c5.number_input("Actual Stake ($)", value=float(suggested_stake))
+            res = c6.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
             if st.form_submit_button("Save Bet to Database"):
                 if event.strip():
                     p = 0
-                    if result == "Win": p = round(final_stake * (dec_odds - 1), 2)
-                    elif result == "Loss": p = -final_stake
-                    new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": input_odds, "Edge": edge_pct/100, "Stake": final_stake, "Result": result, "Profit": p}
-                    df_new = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-                    save_data(df_new, username)
+                    if res == "Win": p = round(stake * (dec_odds - 1), 2)
+                    elif res == "Loss": p = -stake
+                    new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": input_odds, "Edge": edge_pct/100, "Stake": stake, "Result": res, "Profit": p}
+                    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                    save_data(df, username)
                     if p != 0: update_bankroll(p, username)
                     st.session_state.autofill_event = ""
                     st.toast("Logged!", icon="✅"); st.rerun()
 
+        with st.expander("⚙️ Manage Sportsbooks & States"):
+            mc1, mc2 = st.columns(2)
+            with mc1:
+                nb = st.text_input("New Book")
+                if st.button("➕ Add Book") and nb:
+                    dropdowns["books"].append(nb); save_dropdowns(dropdowns); st.rerun()
+            with mc2:
+                ns = st.text_input("New State")
+                if st.button("➕ Add State") and ns:
+                    dropdowns["states"].append(ns); save_dropdowns(dropdowns); st.rerun()
+
     elif active_page == "📊 Dashboard":
         if not df.empty:
             st.metric("Total P/L", f"${df['Profit'].sum():,.2f}")
-            filtered_df = df.sort_values('Date')
-            filtered_df['Cumulative Profit'] = filtered_df['Profit'].cumsum()
-            fig = px.line(filtered_df, x='Date', y='Cumulative Profit', title="Profit Trend", markers=True)
-            st.plotly_chart(fig, width='stretch')
+            fdf = df.sort_values('Date')
+            fdf['Cumulative Profit'] = fdf['Profit'].cumsum()
+            st.plotly_chart(px.line(fdf, x='Date', y='Cumulative Profit', title="Profit Trend", markers=True), width='stretch')
 
     elif active_page == "🗄️ History":
         st.subheader("🏟️ Active Wagers")
@@ -240,9 +262,20 @@ if st.session_state["authentication_status"]:
                     save_data(df, username); update_bankroll(-row['Stake'], username); st.rerun()
                 if col4.button("🗑️", key=f"d{i}"):
                     df = df.drop(i); save_data(df, username); st.rerun()
+        
         st.divider()
         st.subheader("📜 History")
-        st.dataframe(df[df['Result'] != 'Pending'].sort_values('Date', ascending=False), width='stretch', hide_index=True)
+        settled = df[df['Result'] != 'Pending'].sort_values('Date', ascending=False)
+        st.dataframe(settled, width='stretch', hide_index=True)
+        
+        with st.expander("🗑️ Delete/Refund a Settled Bet"):
+            settled_list = {f"{r['Date']} | {r['Event']} (${r['Profit']})": idx for idx, r in settled.iterrows()}
+            target = st.selectbox("Select bet to remove:", [""] + list(settled_list.keys()))
+            if st.button("Delete & Reverse Bankroll") and target:
+                idx_to_del = settled_list[target]
+                update_bankroll(-df.at[idx_to_del, 'Profit'], username)
+                df = df.drop(idx_to_del)
+                save_data(df, username); st.rerun()
 
 elif st.session_state["authentication_status"] is False:
     st.error("Incorrect credentials")
