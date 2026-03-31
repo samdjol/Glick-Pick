@@ -24,7 +24,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Direct Key Extraction) ---
+# --- 3. SUPABASE API (Direct JSON Target) ---
 @st.cache_data(ttl=300)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -40,13 +40,12 @@ def get_glicks_picks():
 
         picks = []
         for item in data:
-            # PULLING DIRECTLY FROM JSON AS REQUESTED
-            # We check for the capitalized keys you showed, with raw fallbacks just in case
-            event_display = item.get("Event") or item.get("event")
-            price_display = item.get("Price") or item.get("price")
-            book_display = item.get("Book") or item.get("book")
+            # STRICT TARGETING: Using the top-level keys from your JSON
+            book_display = item.get("Book")
+            price_display = item.get("Price")
+            event_display = item.get("Event")
             
-            # If the API returns the raw table format, we reconstruct from 'Raw' or top-level keys
+            # Smart Fallbacks: Only trigger if the primary keys are missing
             if not event_display:
                 p_name = item.get("player") or "Unknown"
                 p_dir = str(item.get("direction", "")).upper()
@@ -59,6 +58,7 @@ def get_glicks_picks():
                 price_display = f"+{raw_p}" if raw_p > 0 else str(raw_p)
                 
             if not book_display:
+                # We only look at best_book if 'Book' is null
                 book_display = item.get("best_book", "DraftKings")
 
             picks.append({
@@ -158,9 +158,12 @@ if st.session_state["authentication_status"]:
     # --- 6. NAVIGATION & STATE CONTROLLER ---
     if st.session_state.get('pending_track'):
         track_data = st.session_state.pending_track
+        # Update Sidebar Odds
         st.session_state['odds_input'] = track_data['odds']
+        # Set Autofills
         st.session_state.autofill_event = track_data['event']
         st.session_state.autofill_book = track_data['book']
+        # Switch Active Tab
         st.session_state['nav_bar_key'] = "📝 Log New Bet"
         del st.session_state['pending_track']
 
@@ -225,7 +228,7 @@ if st.session_state["authentication_status"]:
                     ca.caption(f"Best Odds: {p['Price']} at {p['Book']}")
                     if cb.button("Track", key=f"api_{p['Event']}", width='stretch'):
                         try:
-                            # Strip '+' and convert to int for the Sidebar
+                            # Strip '+' and push to sidebar session state
                             clean_odds = int(str(p['Price']).replace('+', ''))
                         except:
                             clean_odds = -110
@@ -267,17 +270,6 @@ if st.session_state["authentication_status"]:
                     st.session_state.autofill_event = ""; st.session_state.autofill_book = ""
                     st.toast("Logged!", icon="✅"); st.rerun()
 
-        with st.expander("⚙️ Manage Dropdowns"):
-            mc1, mc2 = st.columns(2)
-            with mc1:
-                nb = st.text_input("New Book")
-                if st.button("➕ Add Book") and nb:
-                    dropdowns["books"].append(nb); save_dropdowns(dropdowns); st.rerun()
-            with mc2:
-                ns = st.text_input("New State")
-                if st.button("➕ Add State") and ns:
-                    dropdowns["states"].append(ns); save_dropdowns(dropdowns); st.rerun()
-
     elif active_page == "📊 Dashboard":
         if not df_current.empty:
             st.metric("Total P/L", f"${df_current['Profit'].sum():,.2f}")
@@ -307,7 +299,7 @@ if st.session_state["authentication_status"]:
         settled = df_current[df_current['Result'] != 'Pending'].sort_values('Date', ascending=False)
         st.dataframe(settled, width='stretch', hide_index=True)
         
-        # Restoration: Delete Settled Bet feature
+        # RESTORED: Delete settled bets tool
         with st.expander("🗑️ Delete/Refund a Settled Bet"):
             if not settled.empty:
                 settled_list = {f"{r['Date']} | {r['Event']} (${r['Profit']})": idx for idx, r in settled.iterrows()}
@@ -318,7 +310,7 @@ if st.session_state["authentication_status"]:
                     update_bankroll(-profit_to_reverse, username)
                     df_final = df_current.drop(idx_to_del)
                     save_data(df_final, username)
-                    st.toast("Settled bet removed!")
+                    st.toast("Settled bet removed and bankroll adjusted!")
                     st.rerun()
 
 elif st.session_state["authentication_status"] is False:
