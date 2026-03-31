@@ -24,15 +24,12 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API & BOOK MAPPING ---
+# --- 3. HELPERS: MAPPING & MATCHUPS ---
 def clean_book_name(raw_book):
     """Maps raw API book names to standardized display names."""
     if not raw_book:
         return "DraftKings"
-    
-    # Normalize: lowercase and remove underscores/spaces
     lookup = str(raw_book).lower().replace("_", "").replace(" ", "")
-    
     mapping = {
         "williamhillus": "Caesars",
         "caesars": "Caesars",
@@ -47,15 +44,25 @@ def clean_book_name(raw_book):
         "espnbet": "ESPN Bet",
         "barstool": "ESPN Bet"
     }
-    
     return mapping.get(lookup, str(raw_book).title())
+
+def get_matchup_string(item):
+    """Constructs: 'PlayerTeam vs/at Opponent'"""
+    opp = item.get("opponent", "")
+    home = item.get("home_team", "")
+    away = item.get("away_team", "")
+    
+    if home and not away:
+        return f"{home} vs {opp}"
+    elif away and not home:
+        return f"{away} at {opp}"
+    return opp if opp else ""
 
 @st.cache_data(ttl=300)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
     url = f"https://ajjruzolkbzardssopos.supabase.co/rest/v1/picks?select=*&season=eq.2026&date=eq.{today_str}"
     apikey = "sb_publishable_aAFvyqUjJFYQsuG8GY2KTA_U4SLd545"
-    
     headers = {"apikey": apikey, "Authorization": f"Bearer {apikey}", "Content-Type": "application/json"}
 
     try:
@@ -65,56 +72,39 @@ def get_glicks_picks():
 
         picks = []
         for item in data:
-            # Event and Price Extraction
-            event = item.get("Event")
-            price = item.get("Price")
-            book_raw = item.get("Book") or item.get("best_book")
+            # Matchup Logic
+            matchup = get_matchup_string(item)
+            p_name = item.get("player") or "Unknown"
+            p_dir = str(item.get("direction", "")).upper()
+            p_line = str(item.get("line", ""))
+            p_mkt = item.get("market", "")
             
-            # --- TIME EXTRACTION LOGIC ---
-            # Targeting "game_time": "7:15 PM ET"
+            # Combine for Event title
+            event = f"[{matchup}] {p_name}: {p_dir} {p_line} {p_mkt}"
+            
+            # Price & Book
+            raw_p = item.get("best_price", -110)
+            price = f"+{raw_p}" if raw_p > 0 else str(raw_p)
+            book = clean_book_name(item.get("best_book", "DraftKings"))
+            
+            # Time & Sorting
             display_time = item.get("game_time") or "TBD"
-            sort_key = "23:59" # Default for TBD
-            
+            sort_key = "23:59"
             if display_time != "TBD":
                 try:
-                    # Strip " ET" if present for parsing
                     t_str = display_time.replace(" ET", "").strip()
-                    # Convert "7:15 PM" to a 24hr string "19:15" for correct sorting
                     t_obj = datetime.datetime.strptime(t_str, "%I:%M %p")
                     sort_key = t_obj.strftime("%H:%M")
-                except:
-                    # Fallback for ISO strings if game_time is missing
-                    raw_alt = item.get("commence_time") or item.get("start_time")
-                    if raw_alt:
-                        try:
-                            dt_obj = datetime.datetime.fromisoformat(str(raw_alt).replace('Z', '+00:00'))
-                            nyc_dt = dt_obj.astimezone(NYC_TZ)
-                            display_time = nyc_dt.strftime("%I:%M %p ET")
-                            sort_key = nyc_dt.strftime("%H:%M")
-                        except: pass
-
-            if not event:
-                p_name = item.get("player") or "Unknown"
-                p_dir = str(item.get("direction", "")).upper()
-                p_line = str(item.get("line", ""))
-                p_mkt = item.get("market", "")
-                event = f"{p_name}: {p_dir} {p_line} {p_mkt}"
-            
-            if not price:
-                raw_p = item.get("best_price", -110)
-                price = f"+{raw_p}" if raw_p > 0 else str(raw_p)
-                
-            book = clean_book_name(book_raw)
+                except: pass
 
             picks.append({
-                "Event": str(event),
-                "Price": str(price),
-                "Book": str(book),
+                "Event": event,
+                "Price": price,
+                "Book": book,
                 "Time": display_time,
                 "SortKey": sort_key
             })
         
-        # Chronological Sort
         picks.sort(key=lambda x: x['SortKey'])
         return picks
     except: return []
@@ -247,12 +237,19 @@ if st.session_state["authentication_status"]:
     
     input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input")
     edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, step=0.1, key="edge_input")
+    
+    # Toggle for rounding to whole number
+    round_toggle = st.sidebar.toggle("Round to Whole Number", value=True)
+    
     k_map = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
     k_sel = st.sidebar.radio("Multiplier", list(k_map.keys()), index=2, horizontal=True)
     
     dec_odds = american_to_decimal(input_odds)
     full_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
-    suggested_stake = round(full_k * k_map[k_sel] * st.session_state.bankroll, 2)
+    raw_suggested = full_k * k_map[k_sel] * st.session_state.bankroll
+    
+    # Apply rounding logic
+    suggested_stake = round(raw_suggested) if round_toggle else round(raw_suggested, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
     # --- 8. NAV BAR ---
@@ -279,7 +276,6 @@ if st.session_state["authentication_status"]:
                             clean_odds = int(str(p['Price']).replace('+', ''))
                         except:
                             clean_odds = -110
-                            
                         st.session_state.pending_track = {
                             "event": p['Event'],
                             "book": p['Book'],
@@ -290,12 +286,10 @@ if st.session_state["authentication_status"]:
     elif active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
-        
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
             dropdowns["books"].append(def_bk)
             save_dropdowns(dropdowns)
-            
         book_idx = dropdowns["books"].index(def_bk) if def_bk in dropdowns["books"] else 0
 
         with st.form("bet_form", clear_on_submit=True):
