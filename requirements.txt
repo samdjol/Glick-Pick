@@ -6,3 +6,5 @@ google-auth
 streamlit-authenticator
 backports.zoneinfo;python_version<"3.9"
 tzdata
+requests
+beautifulsoup4
