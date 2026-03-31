@@ -54,28 +54,21 @@ def get_glicks_picks():
             call = str(item.get("direction", "")).upper()
             line = str(item.get("line", ""))
             market = item.get("market", "")
-            
-            # Target the surgical keys from your JSON
             raw_price = item.get("best_price", -110)
             raw_book = str(item.get("best_book", "draftkings")).lower()
             
             price_str = f"+{raw_price}" if raw_price > 0 else str(raw_price)
-            
             book_name = "DraftKings"
             for slug, display in book_map.items():
                 if slug in raw_book:
                     book_name = display
                     break
             
-            picks.append({
-                "Event": f"{player}: {call} {line} {market}",
-                "Price": price_str,
-                "Book": book_name
-            })
+            picks.append({"Event": f"{player}: {call} {line} {market}", "Price": price_str, "Book": book_name})
         return picks
     except: return []
 
-# --- 4. DATA HELPERS ---
+# --- 4. DATA HELPERS (Now with Caching to prevent APIErrors) ---
 def get_ws_smart(sheet, name):
     all_ws = {ws.title.lower().strip(): ws for ws in sheet.worksheets()}
     target = name.lower().strip()
@@ -83,6 +76,7 @@ def get_ws_smart(sheet, name):
     st.error(f"Tab Not Found: '{target}'")
     st.stop()
 
+@st.cache_data(ttl=3600) # Cache credentials for 1 hour
 def load_credentials():
     ws = sheet.worksheet("Credentials")
     df = pd.DataFrame(ws.get_all_records())
@@ -124,6 +118,7 @@ def set_bankroll(amount, user_prefix):
     ws = get_ws_smart(sheet, f"{user_prefix}_bankroll")
     ws.update_acell('B1', amount)
 
+@st.cache_data(ttl=3600) # Cache dropdowns to save quota
 def load_dropdowns():
     ws = sheet.worksheet("Dropdowns")
     books = ws.col_values(1)[1:]
@@ -138,6 +133,7 @@ def save_dropdowns(data):
     states = data['states'] + [''] * (max_len - len(data['states']))
     rows = [['Books', 'States']] + [[books[i], states[i]] for i in range(max_len)]
     ws.update(values=rows, range_name='A1')
+    st.cache_data.clear() # Clear cache so changes show up instantly
 
 def american_to_decimal(odds):
     try:
@@ -158,18 +154,13 @@ if not st.session_state.get("authentication_status"):
 if st.session_state["authentication_status"]:
     login_placeholder.empty()
     
-    # --- 6. NAVIGATION & STATE CONTROLLER (CRITICAL FIX) ---
-    # We check for pending updates BEFORE any widgets (Sidebar or Nav) are drawn
+    # --- 6. NAVIGATION & STATE CONTROLLER ---
     if st.session_state.get('pending_track'):
         track_data = st.session_state.pending_track
-        # Force update the Odds key
         st.session_state['odds_input'] = track_data['odds']
-        # Update Autofills
         st.session_state.autofill_event = track_data['event']
         st.session_state.autofill_book = track_data['book']
-        # Set Redirect
         st.session_state['nav_bar_key'] = "📝 Log New Bet"
-        # Clear the flag
         del st.session_state['pending_track']
 
     if 'dashboard_entered' not in st.session_state:
@@ -184,7 +175,7 @@ if st.session_state["authentication_status"]:
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     df_current = load_data(username)
 
-    # --- 7. SIDEBAR (Renders with updated state) ---
+    # --- 7. SIDEBAR ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.title(f"Welcome, {name}")
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
@@ -200,15 +191,13 @@ if st.session_state["authentication_status"]:
 
     st.sidebar.divider()
     st.sidebar.header("🧮 Kelly Calculator")
-    
     if 'odds_input' not in st.session_state: st.session_state.odds_input = -110
     if 'edge_input' not in st.session_state: st.session_state.edge_input = 15.0
     
     input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input")
     edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, step=0.1, key="edge_input")
-    
-    k_sel = st.sidebar.radio("Multiplier", ["Full", "Half", "Quarter"], index=2, horizontal=True)
     k_map = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
+    k_sel = st.sidebar.radio("Multiplier", list(k_map.keys()), index=2, horizontal=True)
     
     dec_odds = american_to_decimal(input_odds)
     full_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
@@ -234,26 +223,19 @@ if st.session_state["authentication_status"]:
                     ca.write(f"**{p['Event']}**")
                     ca.caption(f"Best Odds: {p['Price']} at {p['Book']}")
                     if cb.button("Track", key=f"api_{p['Event']}", width='stretch'):
-                        # Set a pending update flag instead of trying to update state directly
-                        try:
-                            clean_odds = int(str(p['Price']).replace('+', ''))
-                        except:
-                            clean_odds = -110
-                            
-                        st.session_state.pending_track = {
-                            "event": p['Event'],
-                            "book": p['Book'],
-                            "odds": clean_odds
-                        }
+                        try: clean_odds = int(str(p['Price']).replace('+', ''))
+                        except: clean_odds = -110
+                        st.session_state.pending_track = {"event": p['Event'], "book": p['Book'], "odds": clean_odds}
                         st.rerun()
 
     elif active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
-        
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
-            dropdowns["books"].append(def_bk); save_dropdowns(dropdowns)
+            # This will update the sheet and clear the cache
+            dropdowns["books"].append(def_bk)
+            save_dropdowns(dropdowns)
         book_idx = dropdowns["books"].index(def_bk) if def_bk in dropdowns["books"] else 0
 
         with st.form("bet_form", clear_on_submit=True):
@@ -277,17 +259,6 @@ if st.session_state["authentication_status"]:
                     if p != 0: update_bankroll(p, username)
                     st.session_state.autofill_event = ""; st.session_state.autofill_book = ""
                     st.toast("Logged!", icon="✅"); st.rerun()
-
-        with st.expander("⚙️ Manage Dropdowns"):
-            mc1, mc2 = st.columns(2)
-            with mc1:
-                nb = st.text_input("New Book")
-                if st.button("➕ Add Book") and nb:
-                    dropdowns["books"].append(nb); save_dropdowns(dropdowns); st.rerun()
-            with mc2:
-                ns = st.text_input("New State")
-                if st.button("➕ Add State") and ns:
-                    dropdowns["states"].append(ns); save_dropdowns(dropdowns); st.rerun()
 
     elif active_page == "📊 Dashboard":
         if not df_current.empty:
@@ -316,15 +287,6 @@ if st.session_state["authentication_status"]:
         st.subheader("📜 History")
         settled = df_current[df_current['Result'] != 'Pending'].sort_values('Date', ascending=False)
         st.dataframe(settled, width='stretch', hide_index=True)
-        
-        with st.expander("🗑️ Delete/Refund a Settled Bet"):
-            settled_list = {f"{r['Date']} | {r['Event']} (${r['Profit']})": idx for idx, r in settled.iterrows()}
-            target = st.selectbox("Select bet to remove:", [""] + list(settled_list.keys()))
-            if st.button("Delete & Reverse Bankroll") and target:
-                idx_to_del = settled_list[target]
-                update_bankroll(-df_current.at[idx_to_del, 'Profit'], username)
-                df_current = df_current.drop(idx_to_del)
-                save_data(df_current, username); st.rerun()
 
 elif st.session_state["authentication_status"] is False:
     st.error("Incorrect credentials")
