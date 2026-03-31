@@ -24,7 +24,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Surgical Event Fetcher) ---
+# --- 3. SUPABASE API (Fixed for "Direction") ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -45,7 +45,8 @@ def get_glicks_picks():
         picks = []
         for item in data:
             player = item.get("player_name") or item.get("player") or "Unknown"
-            call = str(item.get("call", "")).upper()
+            # FIX: Check for 'direction' or 'call_type' which usually holds OVER/UNDER
+            call = str(item.get("direction") or item.get("call") or "").upper()
             line = str(item.get("line", ""))
             market = item.get("market", "") or item.get("prop", "")
             
@@ -134,7 +135,7 @@ if st.session_state["authentication_status"]:
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     df = load_data(username)
 
-    # --- SIDEBAR (THE SOURCE OF TRUTH) ---
+    # --- SIDEBAR ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.title(f"Welcome, {name}")
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
@@ -148,14 +149,11 @@ if st.session_state["authentication_status"]:
 
     st.sidebar.divider()
     st.sidebar.header("🧮 Kelly Calculator")
-    
-    # SETTING STEADY DEFAULTS HERE (-110 and 15%)
     if 'odds_input' not in st.session_state: st.session_state.odds_input = -110
     if 'edge_input' not in st.session_state: st.session_state.edge_input = 15.0
 
     input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input")
     edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, step=0.1, key="edge_input")
-    
     k_opts = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
     k_sel = st.sidebar.radio("Multiplier", list(k_opts.keys()), index=2, horizontal=True)
     
@@ -164,10 +162,50 @@ if st.session_state["authentication_status"]:
     suggested_stake = round(full_k * k_opts[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. MAIN TABS ---
-    tabs = st.tabs(["📝 Log New Bet", "📊 Dashboard", "🗄️ History", "🎯 Glick's Picks"])
+    # --- 6. STATEFUL NAVIGATION (The Tab Switcher) ---
+    nav_labels = ["🎯 Glick's Picks", "📝 Log New Bet", "📊 Dashboard", "🗄️ History"]
+    
+    # Initialize the active page if not set
+    if 'active_page' not in st.session_state:
+        st.session_state.active_page = nav_labels[0]
 
-    with tabs[0]:
+    # Create a navigation bar that acts like tabs
+    active_tab = st.segmented_control(
+        "Navigation", 
+        nav_labels, 
+        selection_mode="single", 
+        default=st.session_state.active_page,
+        key="nav_bar",
+        label_visibility="collapsed"
+    )
+
+    # Sync session state to the control
+    st.session_state.active_page = active_tab
+
+    st.divider()
+
+    # --- 7. TAB CONTENT ---
+    
+    if st.session_state.active_page == "🎯 Glick's Picks":
+        st.subheader("Latest Picks from Supabase")
+        available_picks = get_glicks_picks()
+        if not available_picks:
+            st.info("No picks found for today.")
+        else:
+            for p in available_picks:
+                with st.container(border=True):
+                    cola, colb = st.columns([4, 1])
+                    cola.write(f"**{p['Event']}**")
+                    cola.caption("Using Odds & Edge from your Sidebar settings.")
+                    if colb.button("Track", key=f"api_{p['Event']}", width='stretch'):
+                        # 1. Store the event name
+                        st.session_state.autofill_event = p['Event']
+                        # 2. FORCE SWITCH TO THE LOG PAGE
+                        st.session_state.active_page = "📝 Log New Bet"
+                        st.toast(f"Pushed {p['Event']} to Log!")
+                        st.rerun()
+
+    elif st.session_state.active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
         default_event = st.session_state.get('autofill_event', "")
@@ -179,7 +217,6 @@ if st.session_state["authentication_status"]:
             state = c3.selectbox("State", dropdowns["states"])
             c4, c5, c6 = st.columns(3)
             event = c4.text_input("Event / Matchup", value=default_event)
-            # Uses Sidebar's suggested stake
             final_stake = c5.number_input("Actual Stake ($)", value=float(suggested_stake))
             result = c6.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
             
@@ -188,7 +225,6 @@ if st.session_state["authentication_status"]:
                     p = 0
                     if result == "Win": p = round(final_stake * (dec_odds - 1), 2)
                     elif result == "Loss": p = -final_stake
-                    # LOGGING USING SIDEBAR ODDS/EDGE
                     new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": input_odds, "Edge": edge_pct/100, "Stake": final_stake, "Result": result, "Profit": p}
                     df_new = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                     save_data(df_new, username)
@@ -196,7 +232,7 @@ if st.session_state["authentication_status"]:
                     st.session_state.autofill_event = ""
                     st.toast("Logged!", icon="✅"); st.rerun()
 
-    with tabs[1]:
+    elif st.session_state.active_page == "📊 Dashboard":
         if not df.empty:
             st.metric("Total P/L", f"${df['Profit'].sum():,.2f}")
             filtered_df = df.sort_values('Date')
@@ -204,7 +240,7 @@ if st.session_state["authentication_status"]:
             fig = px.line(filtered_df, x='Date', y='Cumulative Profit', title="Profit Trend", markers=True)
             st.plotly_chart(fig, width='stretch')
 
-    with tabs[2]:
+    elif st.session_state.active_page == "🗄️ History":
         st.subheader("🏟️ Active Wagers")
         pending = df[df['Result'] == 'Pending']
         for i, row in pending.iterrows():
@@ -223,23 +259,6 @@ if st.session_state["authentication_status"]:
         st.divider()
         st.subheader("📜 History")
         st.dataframe(df[df['Result'] != 'Pending'].sort_values('Date', ascending=False), width='stretch', hide_index=True)
-
-    with tabs[3]:
-        st.subheader("Latest Picks from Supabase")
-        available_picks = get_glicks_picks()
-        if not available_picks:
-            st.info("No picks found for today.")
-        else:
-            for p in available_picks:
-                with st.container(border=True):
-                    cola, colb = st.columns([4, 1])
-                    cola.write(f"**{p['Event']}**")
-                    cola.caption("Using Odds & Edge from your Sidebar settings.")
-                    if colb.button("Track", key=f"api_{p['Event']}", width='stretch'):
-                        # ONLY carry over the Event name
-                        st.session_state.autofill_event = p['Event']
-                        st.toast(f"Pushed {p['Event']} to Log tab!")
-                        st.rerun()
 
 elif st.session_state["authentication_status"] is False:
     st.error("Incorrect credentials")
