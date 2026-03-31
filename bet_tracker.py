@@ -157,6 +157,21 @@ if not st.session_state.get("authentication_status"):
 
 if st.session_state["authentication_status"]:
     login_placeholder.empty()
+    
+    # --- 6. NAVIGATION & STATE CONTROLLER (CRITICAL FIX) ---
+    # We check for pending updates BEFORE any widgets (Sidebar or Nav) are drawn
+    if st.session_state.get('pending_track'):
+        track_data = st.session_state.pending_track
+        # Force update the Odds key
+        st.session_state['odds_input'] = track_data['odds']
+        # Update Autofills
+        st.session_state.autofill_event = track_data['event']
+        st.session_state.autofill_book = track_data['book']
+        # Set Redirect
+        st.session_state['nav_bar_key'] = "📝 Log New Bet"
+        # Clear the flag
+        del st.session_state['pending_track']
+
     if 'dashboard_entered' not in st.session_state:
         st.success("Logged in!")
         if st.button("🚀 Enter Dashboard", width='stretch'):
@@ -169,7 +184,7 @@ if st.session_state["authentication_status"]:
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     df_current = load_data(username)
 
-    # --- SIDEBAR: THE SOURCE OF TRUTH ---
+    # --- 7. SIDEBAR (Renders with updated state) ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.title(f"Welcome, {name}")
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
@@ -186,11 +201,9 @@ if st.session_state["authentication_status"]:
     st.sidebar.divider()
     st.sidebar.header("🧮 Kelly Calculator")
     
-    # Init Sidebar state
     if 'odds_input' not in st.session_state: st.session_state.odds_input = -110
     if 'edge_input' not in st.session_state: st.session_state.edge_input = 15.0
     
-    # Sidebar widgets tied to session state
     input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input")
     edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, step=0.1, key="edge_input")
     
@@ -202,17 +215,14 @@ if st.session_state["authentication_status"]:
     suggested_stake = round(full_k * k_map[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. NAV CONTROLLER ---
+    # --- 8. NAV BAR ---
     nav_labels = ["🎯 Glick's Picks", "📝 Log New Bet", "📊 Dashboard", "🗄️ History"]
-    if st.session_state.get('redirect_to'):
-        st.session_state['nav_bar_key'] = st.session_state['redirect_to']
-        del st.session_state['redirect_to']
     if 'nav_bar_key' not in st.session_state: st.session_state['nav_bar_key'] = nav_labels[0]
 
     active_page = st.segmented_control("Navigation", nav_labels, selection_mode="single", key="nav_bar_key", label_visibility="collapsed")
     st.divider()
 
-    # --- 7. CONTENT ---
+    # --- 9. CONTENT ---
     if active_page == "🎯 Glick's Picks":
         st.subheader("Latest Picks")
         picks = get_glicks_picks()
@@ -224,18 +234,17 @@ if st.session_state["authentication_status"]:
                     ca.write(f"**{p['Event']}**")
                     ca.caption(f"Best Odds: {p['Price']} at {p['Book']}")
                     if cb.button("Track", key=f"api_{p['Event']}", width='stretch'):
-                        # 1. Store Autofill Data
-                        st.session_state.autofill_event = p['Event']
-                        st.session_state.autofill_book = p['Book']
-                        
-                        # 2. OVERWRITE SIDEBAR ODDS (This is the sync you wanted)
+                        # Set a pending update flag instead of trying to update state directly
                         try:
-                            # Strip '+' if it exists before converting to int
-                            st.session_state.odds_input = int(str(p['Price']).replace('+', ''))
-                        except: pass
-                        
-                        # 3. Switch Tabs
-                        st.session_state['redirect_to'] = "📝 Log New Bet"
+                            clean_odds = int(str(p['Price']).replace('+', ''))
+                        except:
+                            clean_odds = -110
+                            
+                        st.session_state.pending_track = {
+                            "event": p['Event'],
+                            "book": p['Book'],
+                            "odds": clean_odds
+                        }
                         st.rerun()
 
     elif active_page == "📝 Log New Bet":
@@ -250,13 +259,10 @@ if st.session_state["authentication_status"]:
         with st.form("bet_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             date = c1.date_input("Date", datetime.datetime.now(NYC_TZ).date())
-            # Book pre-selected from Track
             book = c2.selectbox("Sportsbook", dropdowns["books"], index=book_idx)
             state = c3.selectbox("State", dropdowns["states"])
             c4, c5, c6 = st.columns(3)
-            # Event pre-filled from Track
             event = c4.text_input("Event / Matchup", value=st.session_state.get('autofill_event', ""))
-            # Stake calculated using the NEW odds in the sidebar
             stake = c5.number_input("Actual Stake ($)", value=float(suggested_stake))
             res = c6.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
             if st.form_submit_button("Save Bet"):
@@ -264,7 +270,6 @@ if st.session_state["authentication_status"]:
                     p = 0
                     if res == "Win": p = round(stake * (dec_odds - 1), 2)
                     elif res == "Loss": p = -stake
-                    # Use current sidebar odds (input_odds) for the record
                     new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": input_odds, "Edge": edge_pct/100, "Stake": stake, "Result": res, "Profit": p}
                     df_master = load_data(username)
                     df_master = pd.concat([df_master, pd.DataFrame([new_row])], ignore_index=True)
