@@ -53,7 +53,6 @@ def clean_book_name(raw_book):
 @st.cache_data(ttl=300)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
-    # We fetch all, then sort in Python for more reliable time ordering
     url = f"https://ajjruzolkbzardssopos.supabase.co/rest/v1/picks?select=*&season=eq.2026&date=eq.{today_str}"
     apikey = "sb_publishable_aAFvyqUjJFYQsuG8GY2KTA_U4SLd545"
     
@@ -66,27 +65,34 @@ def get_glicks_picks():
 
         picks = []
         for item in data:
-            # Extraction logic
+            # Event and Price Extraction
             event = item.get("Event")
             price = item.get("Price")
             book_raw = item.get("Book") or item.get("best_book")
             
-            # Time Extraction for Sorting
-            raw_time = item.get("time") or item.get("commence_time") or ""
-            display_time = "TBD"
-            sort_key = "99:99" # Default late for missing times
+            # --- TIME EXTRACTION LOGIC ---
+            # Targeting "game_time": "7:15 PM ET"
+            display_time = item.get("game_time") or "TBD"
+            sort_key = "23:59" # Default for TBD
             
-            if raw_time:
+            if display_time != "TBD":
                 try:
-                    # Convert ISO string to NYC Time
-                    dt_obj = datetime.datetime.fromisoformat(raw_time.replace('Z', '+00:00'))
-                    nyc_dt = dt_obj.astimezone(NYC_TZ)
-                    display_time = nyc_dt.strftime("%I:%M %p")
-                    sort_key = nyc_dt.strftime("%H:%M") # 24hr format for sorting
+                    # Strip " ET" if present for parsing
+                    t_str = display_time.replace(" ET", "").strip()
+                    # Convert "7:15 PM" to a 24hr string "19:15" for correct sorting
+                    t_obj = datetime.datetime.strptime(t_str, "%I:%M %p")
+                    sort_key = t_obj.strftime("%H:%M")
                 except:
-                    display_time = str(raw_time)
+                    # Fallback for ISO strings if game_time is missing
+                    raw_alt = item.get("commence_time") or item.get("start_time")
+                    if raw_alt:
+                        try:
+                            dt_obj = datetime.datetime.fromisoformat(str(raw_alt).replace('Z', '+00:00'))
+                            nyc_dt = dt_obj.astimezone(NYC_TZ)
+                            display_time = nyc_dt.strftime("%I:%M %p ET")
+                            sort_key = nyc_dt.strftime("%H:%M")
+                        except: pass
 
-            # Fallback for Event name
             if not event:
                 p_name = item.get("player") or "Unknown"
                 p_dir = str(item.get("direction", "")).upper()
@@ -94,12 +100,10 @@ def get_glicks_picks():
                 p_mkt = item.get("market", "")
                 event = f"{p_name}: {p_dir} {p_line} {p_mkt}"
             
-            # Fallback for Price
             if not price:
                 raw_p = item.get("best_price", -110)
                 price = f"+{raw_p}" if raw_p > 0 else str(raw_p)
                 
-            # Standardize the Book Name
             book = clean_book_name(book_raw)
 
             picks.append({
@@ -110,7 +114,7 @@ def get_glicks_picks():
                 "SortKey": sort_key
             })
         
-        # Sort by Time (Earliest games first)
+        # Chronological Sort
         picks.sort(key=lambda x: x['SortKey'])
         return picks
     except: return []
@@ -260,7 +264,7 @@ if st.session_state["authentication_status"]:
 
     # --- 9. CONTENT ---
     if active_page == "🎯 Glick's Picks":
-        st.subheader("Latest Picks (Sorted by Game Time)")
+        st.subheader("Latest Picks")
         picks = get_glicks_picks()
         if not picks: st.info("No picks found for today.")
         else:
@@ -268,8 +272,7 @@ if st.session_state["authentication_status"]:
                 with st.container(border=True):
                     ca, cb = st.columns([4, 1])
                     ca.write(f"**{p['Event']}**")
-                    # Added p['Time'] to the display row
-                    ca.write(f"⏰ {p['Time']} | 🏦 **{p['Book']}** | 📈 **{p['Price']}**")
+                    ca.write(f"⏰ **{p['Time']}** | 🏦 **{p['Book']}** | 📈 **{p['Price']}**")
                     
                     if cb.button("Track", key=f"api_{p['Event']}_{p['SortKey']}", width='stretch'):
                         try:
