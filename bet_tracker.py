@@ -1,20 +1,18 @@
 import streamlit as st
 import pandas as pd
 import datetime
+from zoneinfo import ZoneInfo
 import plotly.express as px
 import json
 import gspread
 from google.oauth2.service_account import Credentials
 import streamlit_authenticator as stauth
-import datetime
-from zoneinfo import ZoneInfo
 import requests
 from bs4 import BeautifulSoup
 
-NYC_TZ = ZoneInfo("America/New_York")
-
-# --- 1. PAGE CONFIG ---
+# --- 1. PAGE CONFIG & TIMEZONE ---
 st.set_page_config(page_title="Glick Pick Tracker", layout="wide")
+NYC_TZ = ZoneInfo("America/New_York")
 
 # --- 2. GOOGLE SHEETS CONNECTION ---
 @st.cache_resource
@@ -27,19 +25,16 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
+# --- 3. SCRAPER & HELPERS ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
     url = "https://glicks-picks.com/picks.html"
     try:
         response = requests.get(url, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # This part depends on the exact HTML of the site.
-        # I'm assuming the picks are in a table or specific list items.
         picks = []
-        # Example: Looking for table rows. You might need to adjust 'tr' or 'class' 
-        # based on the actual site source code.
-        rows = soup.find_all('tr')[1:] # Skip header
+        # Update logic based on Glick's actual HTML structure
+        rows = soup.find_all('tr')[1:] 
         for row in rows:
             cols = row.find_all('td')
             if len(cols) >= 3:
@@ -49,16 +44,15 @@ def get_glicks_picks():
                     "Edge": cols[2].text.strip()
                 })
         return picks
-    except Exception as e:
+    except Exception:
         return []
 
-# Initialize "Auto-fill" state so the Log tab knows what to show
+# Initialize "Auto-fill" state
 if 'autofill_event' not in st.session_state:
     st.session_state.autofill_event = ""
 if 'autofill_odds' not in st.session_state:
     st.session_state.autofill_odds = -110
 
-# --- 3. SMART HELPER FUNCTIONS ---
 def get_ws_smart(sheet, name):
     all_ws = {ws.title.lower().strip(): ws for ws in sheet.worksheets()}
     target = name.lower().strip()
@@ -73,7 +67,9 @@ def load_credentials():
     for _, row in df.iterrows():
         user = str(row['Username']).strip()
         credentials["usernames"][user] = {
-            "name": str(row['Name']), "password": str(row['Password']), "email": str(row['Email'])
+            "name": str(row['Name']), 
+            "password": str(row['Password']), 
+            "email": str(row['Email'])
         }
     return credentials
 
@@ -128,7 +124,8 @@ def american_to_decimal(odds):
 
 # --- 4. AUTHENTICATION ---
 credentials = load_credentials()
-authenticator = stauth.Authenticate(credentials, "bet_tracker_cookie", "secure_v3", cookie_expiry_days=30)
+# Use a 32+ character key to satisfy HMAC security requirements
+authenticator = stauth.Authenticate(credentials, "bet_tracker_cookie", "secure_v3_glick_pick_long_key_2026_nyc", cookie_expiry_days=30)
 
 login_placeholder = st.empty()
 if not st.session_state.get("authentication_status"):
@@ -139,7 +136,7 @@ if st.session_state["authentication_status"]:
     login_placeholder.empty()
     if 'dashboard_entered' not in st.session_state:
         st.success(f"Logged in as {st.session_state['name']}")
-        if st.button("🚀 Enter Dashboard", use_container_width=True):
+        if st.button("🚀 Enter Dashboard", width='stretch'):
             st.session_state['dashboard_entered'] = True
             st.rerun()
         st.stop()
@@ -181,7 +178,7 @@ if st.session_state["authentication_status"]:
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
     # --- 6. MAIN TABS ---
-    tabs = st.tabs(["📝 Log New Bet", "📊 Dashboard", "🗄️ History"])
+    tabs = st.tabs(["📝 Log New Bet", "📊 Dashboard", "🗄️ History", "🎯 Glick's Picks"])
 
     with tabs[0]:
         st.subheader("Enter Wager Details")
@@ -205,6 +202,7 @@ if st.session_state["authentication_status"]:
                     df_new = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                     save_data(df_new, username)
                     if p != 0: update_bankroll(p, username)
+                    st.session_state.autofill_event = "" # Reset autofill after save
                     st.toast("Logged!", icon="✅"); st.rerun()
 
         with st.expander("⚙️ Manage Sportsbooks & States"):
@@ -224,7 +222,7 @@ if st.session_state["authentication_status"]:
             filtered_df = df.sort_values('Date')
             filtered_df['Cumulative Profit'] = filtered_df['Profit'].cumsum()
             fig = px.line(filtered_df, x='Date', y='Cumulative Profit', title="Profit Trend", markers=True)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     with tabs[2]:
         st.subheader("🏟️ Active Wagers")
@@ -246,10 +244,9 @@ if st.session_state["authentication_status"]:
         st.divider()
         st.subheader("📜 History")
         settled = df[df['Result'] != 'Pending'].sort_values('Date', ascending=False)
-        st.dataframe(settled, use_container_width=True, hide_index=True)
+        st.dataframe(settled, width='stretch', hide_index=True)
         
         with st.expander("🗑️ Delete/Refund a Settled Bet"):
-            # Create labels for the selectbox
             settled_list = {f"{r['Date']} | {r['Event']} (${r['Profit']})": idx for idx, r in settled.iterrows()}
             target = st.selectbox("Select bet to remove:", [""] + list(settled_list.keys()))
             if st.button("Delete & Reverse Bankroll") and target:
@@ -268,24 +265,18 @@ if st.session_state["authentication_status"]:
         else:
             for p in available_picks:
                 with st.container(border=True):
-                    col1, col2 = st.columns([4, 1])
-                    col1.write(f"**{p['Event']}**")
-                    col1.caption(f"Odds: {p['Odds']} | Edge: {p['Edge']}")
+                    col_a, col_b = st.columns([4, 1])
+                    col_a.write(f"**{p['Event']}**")
+                    col_a.caption(f"Odds: {p['Odds']} | Edge: {p['Edge']}")
                     
-                    if col2.button("Track this Bet", key=f"scrape_{p['Event']}"):
-                        # Update the session state
+                    if col_b.button("Track this Bet", key=f"scrape_{p['Event']}", width='stretch'):
                         st.session_state.autofill_event = p['Event']
-                        # Attempt to parse the odds string to an int
                         try:
                             clean_odds = int(p['Odds'].replace('+', ''))
-                            st.session_state.odds_input = clean_odds # Updates Kelly Calc
-                        except:
-                            pass
-                        
+                            st.session_state.odds_input = clean_odds
+                        except: pass
                         st.toast(f"Moved {p['Event']} to Log tab!")
-                        # Switch to the Log tab (Tab 0)
-                        # Note: You might need to manually click back to Log, 
-                        # but the data will be waiting for you.
+                        st.rerun()
 
 elif st.session_state["authentication_status"] is False:
     st.error("Incorrect credentials")
