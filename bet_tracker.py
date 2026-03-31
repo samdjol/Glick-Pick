@@ -39,14 +39,14 @@ def get_glicks_picks():
         if not isinstance(data, list): return []
 
         picks = []
-        # Mapping raw database slugs to clean display names
-        # Added specific "caesers" and "caeser" typos to fix identification
+        # UPDATED: Added even more variations for Caesars and others
         book_map = {
             "betrivers": "BetRivers", "rivers": "BetRivers",
             "espnbet": "ESPN Bet", "espn": "ESPN Bet",
             "fanduel": "FanDuel", "fd": "FanDuel",
             "betmgm": "BetMGM", "mgm": "BetMGM",
-            "caesars": "Caesars", "caesar": "Caesars", "caeser": "Caesars", "caesers": "Caesars",
+            "caesars": "Caesars", "caesar": "Caesars", "caeser": "Caesars", "caesers": "Caesars", 
+            "czr": "Caesars", "williamhill": "Caesars",
             "draftkings": "DraftKings", "dk": "DraftKings",
             "pinnacle": "Pinnacle", "bovada": "Bovada", "bet365": "Bet365"
         }
@@ -60,15 +60,19 @@ def get_glicks_picks():
             raw_book = str(item.get("best_book", "draftkings")).lower()
             
             price_str = f"+{raw_price}" if raw_price > 0 else str(raw_price)
-            
-            # Map the book name
-            book_name = "DraftKings" # Default
+            book_name = "DraftKings"
             for slug, display in book_map.items():
                 if slug in raw_book:
                     book_name = display
                     break
             
-            picks.append({"Event": f"{player}: {call} {line} {market}", "Price": price_str, "Book": book_name})
+            # Storing the raw item so we can inspect it in the Debug mode
+            picks.append({
+                "Event": f"{player}: {call} {line} {market}", 
+                "Price": price_str, 
+                "Book": book_name,
+                "Raw": item 
+            })
         return picks
     except: return []
 
@@ -231,6 +235,12 @@ if st.session_state["authentication_status"]:
                         except: clean_odds = -110
                         st.session_state.pending_track = {"event": p['Event'], "book": p['Book'], "odds": clean_odds}
                         st.rerun()
+            
+            # --- DEBUG MODE ADDED HERE ---
+            st.divider()
+            with st.expander("🛠️ API Debug (Inspect Raw Data)"):
+                st.write("This shows the raw data coming from the database. Look at the `best_book` key for the Caesars pick.")
+                st.json(picks)
 
     elif active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
@@ -303,23 +313,18 @@ if st.session_state["authentication_status"]:
         settled = df_current[df_current['Result'] != 'Pending'].sort_values('Date', ascending=False)
         st.dataframe(settled, width='stretch', hide_index=True)
         
-        # --- RE-ADDED: DELETE SETTLED BETS FEATURE ---
         with st.expander("🗑️ Delete/Refund a Settled Bet"):
             if not settled.empty:
                 settled_list = {f"{r['Date']} | {r['Event']} (${r['Profit']})": idx for idx, r in settled.iterrows()}
                 target = st.selectbox("Select settled bet to remove:", [""] + list(settled_list.keys()))
                 if st.button("Delete & Reverse Bankroll") and target:
                     idx_to_del = settled_list[target]
-                    # Reverse the profit/loss impact on bankroll
                     profit_to_reverse = df_current.at[idx_to_del, 'Profit']
                     update_bankroll(-profit_to_reverse, username)
-                    # Remove the row and save
                     df_final = df_current.drop(idx_to_del)
                     save_data(df_final, username)
-                    st.toast("Settled bet removed and bankroll adjusted!")
+                    st.toast("Settled bet removed!")
                     st.rerun()
-            else:
-                st.write("No settled bets found.")
 
 elif st.session_state["authentication_status"] is False:
     st.error("Incorrect credentials")
