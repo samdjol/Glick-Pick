@@ -48,35 +48,23 @@ def clean_book_name(raw_book):
     return mapping.get(lookup, str(raw_book).title())
 
 def get_matchup_string(item):
-    """
-    Constructs: 'PlayerTeam vs/at Opponent'
-    Logic: Determines if player is home/away by comparing team fields to the opponent.
-    """
+    """Constructs: 'PlayerTeam vs/at Opponent'"""
     opp = item.get("opponent", "Unknown")
     home = item.get("home_team", "")
     away = item.get("away_team", "")
     
-    # Standardize for comparison
     opp_l = opp.lower().strip()
     home_l = home.lower().strip() if home else ""
     away_l = away.lower().strip() if away else ""
 
-    # Priority 1: If away_team is filled and is NOT the opponent, player is AWAY
     if away and away_l != opp_l:
         return f"{away} at {opp}"
-    
-    # Priority 2: If home_team is filled and is NOT the opponent, player is HOME
     if home and home_l != opp_l:
         return f"{home} vs {opp}"
-    
-    # Fallback: If home_team matches the opponent, the player must be the away team
     if home_l == opp_l and away:
         return f"{away} at {opp}"
-        
-    # Final fallback to prevent [CIN vs CIN]
     if home and not away and home_l == opp_l:
         return f"Away Team at {opp}"
-        
     return f"{home if home else '???'} vs {opp}"
 
 @st.cache_data(ttl=300)
@@ -93,22 +81,17 @@ def get_glicks_picks():
 
         picks = []
         for item in data:
-            # Matchup Logic
             matchup = get_matchup_string(item)
             p_name = item.get("player") or "Unknown"
             p_dir = str(item.get("direction", "")).upper()
             p_line = str(item.get("line", ""))
             p_mkt = item.get("market", "")
-            
-            # Event string
             event = f"[{matchup}] {p_name}: {p_dir} {p_line} {p_mkt}"
             
-            # Price & Book
             raw_p = item.get("best_price", -110)
             price = f"+{raw_p}" if raw_p > 0 else str(raw_p)
             book = clean_book_name(item.get("best_book", "DraftKings"))
             
-            # Time & Sorting
             display_time = item.get("game_time") or "TBD"
             sort_key = "23:59"
             if display_time != "TBD":
@@ -119,11 +102,8 @@ def get_glicks_picks():
                 except: pass
 
             picks.append({
-                "Event": event,
-                "Price": price,
-                "Book": book,
-                "Time": display_time,
-                "SortKey": sort_key
+                "Event": event, "Price": price, "Book": book,
+                "Time": display_time, "SortKey": sort_key
             })
         
         picks.sort(key=lambda x: x['SortKey'])
@@ -216,7 +196,6 @@ if not st.session_state.get("authentication_status"):
 if st.session_state["authentication_status"]:
     login_placeholder.empty()
     
-    # --- 6. NAVIGATION & STATE CONTROLLER ---
     if st.session_state.get('pending_track'):
         track_data = st.session_state.pending_track
         st.session_state['odds_input'] = track_data['odds']
@@ -243,13 +222,13 @@ if st.session_state["authentication_status"]:
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
 
     with st.sidebar.expander("⚙️ Adjust Balance"):
-        adj_action = st.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
+        adj_action = st.sidebar.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
         if adj_action == "Add/Remove":
-            adj_v = st.number_input("Amount ($)", value=0.0)
-            if st.button("Update Balance"): update_bankroll(adj_v, username); st.rerun()
+            adj_v = st.sidebar.number_input("Amount ($)", value=0.0)
+            if st.sidebar.button("Update Balance"): update_bankroll(adj_v, username); st.rerun()
         else:
-            set_v = st.number_input("Exact ($)", value=float(st.session_state.bankroll))
-            if st.button("Set Balance"): set_bankroll(set_v, username); st.rerun()
+            set_v = st.sidebar.number_input("Exact ($)", value=float(st.session_state.bankroll))
+            if st.sidebar.button("Set Balance"): set_bankroll(set_v, username); st.rerun()
 
     st.sidebar.divider()
     st.sidebar.header("🧮 Kelly Calculator")
@@ -258,8 +237,6 @@ if st.session_state["authentication_status"]:
     
     input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input")
     edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, step=0.1, key="edge_input")
-    
-    # Rounding toggle
     round_toggle = st.sidebar.toggle("Round to Whole Number", value=True)
     
     k_map = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
@@ -268,7 +245,6 @@ if st.session_state["authentication_status"]:
     dec_odds = american_to_decimal(input_odds)
     full_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
     raw_suggested = full_k * k_map[k_sel] * st.session_state.bankroll
-    
     suggested_stake = round(raw_suggested) if round_toggle else round(raw_suggested, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
@@ -290,17 +266,11 @@ if st.session_state["authentication_status"]:
                     ca, cb = st.columns([4, 1])
                     ca.write(f"**{p['Event']}**")
                     ca.write(f"⏰ **{p['Time']}** | 🏦 **{p['Book']}** | 📈 **{p['Price']}**")
-                    
-                    if cb.button("Track", key=f"api_{p['Event']}_{p['SortKey']}", width='stretch'):
+                    if cb.button("Track", key=f"api_{p['Event']}", width='stretch'):
                         try:
                             clean_odds = int(str(p['Price']).replace('+', ''))
-                        except:
-                            clean_odds = -110
-                        st.session_state.pending_track = {
-                            "event": p['Event'],
-                            "book": p['Book'],
-                            "odds": clean_odds
-                        }
+                        except: clean_odds = -110
+                        st.session_state.pending_track = {"event": p['Event'], "book": p['Book'], "odds": clean_odds}
                         st.rerun()
 
     elif active_page == "📝 Log New Bet":
@@ -326,7 +296,7 @@ if st.session_state["authentication_status"]:
                     p = 0
                     if res == "Win": p = round(stake * (dec_odds - 1), 2)
                     elif res == "Loss": p = -stake
-                    new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": input_odds, "Edge": edge_pct/100, "Stake": stake, "Result": res, "Profit": p}
+                    new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": st.session_state.get('odds_input', -110), "Edge": edge_pct/100, "Stake": stake, "Result": res, "Profit": p}
                     df_all = load_data(username)
                     df_all = pd.concat([df_all, pd.DataFrame([new_row])], ignore_index=True)
                     save_data(df_all, username)
@@ -344,37 +314,33 @@ if st.session_state["authentication_status"]:
     elif active_page == "🗄️ History":
         st.subheader("🏟️ Active Wagers")
         pending = df_current[df_current['Result'] == 'Pending']
-        for i, row in pending.iterrows():
-            with st.container(border=True):
-                col1, col2, col3, col4 = st.columns([3, 1, 1, 0.5])
-                col1.write(f"**{row['Event']}** | {row['Book']}")
-                if col2.button("✅ Win", key=f"w{i}"):
-                    p = row['Stake'] * (american_to_decimal(row['Odds']) - 1)
-                    df_current.at[i, 'Result'], df_current.at[i, 'Profit'] = 'Win', round(p, 2)
-                    save_data(df_current, username); update_bankroll(p, username); st.rerun()
-                if col3.button("❌ Loss", key=f"l{i}"):
-                    df_current.at[i, 'Result'], df_current.at[i, 'Profit'] = 'Loss', -row['Stake']
-                    save_data(df_current, username); update_bankroll(-row['Stake'], username); st.rerun()
-                if col4.button("🗑️", key=f"d{i}"):
-                    df_current = df_current.drop(i); save_data(df_current, username); st.rerun()
+        if pending.empty:
+            st.info("No active wagers.")
+        else:
+            for i, row in pending.iterrows():
+                # Calculate potential profit for display
+                dec_odds_val = american_to_decimal(row['Odds'])
+                pot_profit = row['Stake'] * (dec_odds_val - 1)
+                
+                with st.container(border=True):
+                    col1, col2, col3, col4 = st.columns([3, 1, 1, 0.5])
+                    col1.write(f"**{row['Event']}** | {row['Book']} ({row['Odds']})")
+                    col1.write(f"💰 Wager: **${row['Stake']:.2f}** | 📈 Potential Profit: **${pot_profit:.2f}**")
+                    
+                    if col2.button("✅ Win", key=f"w{i}"):
+                        p = round(pot_profit, 2)
+                        df_current.at[i, 'Result'], df_current.at[i, 'Profit'] = 'Win', p
+                        save_data(df_current, username); update_bankroll(p, username); st.rerun()
+                    if col3.button("❌ Loss", key=f"l{i}"):
+                        df_current.at[i, 'Result'], df_current.at[i, 'Profit'] = 'Loss', -row['Stake']
+                        save_data(df_current, username); update_bankroll(-row['Stake'], username); st.rerun()
+                    if col4.button("🗑️", key=f"d{i}"):
+                        df_current = df_current.drop(i); save_data(df_current, username); st.rerun()
         
         st.divider()
         st.subheader("📜 History")
         settled = df_current[df_current['Result'] != 'Pending'].sort_values('Date', ascending=False)
         st.dataframe(settled, width='stretch', hide_index=True)
-        
-        with st.expander("🗑️ Delete/Refund a Settled Bet"):
-            if not settled.empty:
-                settled_list = {f"{r['Date']} | {r['Event']} (${r['Profit']})": idx for idx, r in settled.iterrows()}
-                target = st.selectbox("Select settled bet to remove:", [""] + list(settled_list.keys()))
-                if st.button("Delete & Reverse Bankroll") and target:
-                    idx_to_del = settled_list[target]
-                    profit_to_reverse = df_current.at[idx_to_del, 'Profit']
-                    update_bankroll(-profit_to_reverse, username)
-                    df_final = df_current.drop(idx_to_del)
-                    save_data(df_final, username)
-                    st.toast("Settled bet removed and bankroll adjusted!")
-                    st.rerun()
 
 elif st.session_state["authentication_status"] is False:
     st.error("Incorrect credentials")
