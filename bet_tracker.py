@@ -175,7 +175,7 @@ if st.session_state["authentication_status"]:
     # --- 7. TAB CONTENT ---
     
     if active_page == "🎯 Glick's Picks":
-        st.subheader("Latest Picks from Supabase")
+        st.subheader("Latest Picks from Glick's Picks")
         available_picks = get_glicks_picks()
         if not available_picks:
             st.info("No picks found for today.")
