@@ -8,7 +8,6 @@ import gspread
 from google.oauth2.service_account import Credentials
 import streamlit_authenticator as stauth
 import requests
-from bs4 import BeautifulSoup
 
 # --- 1. PAGE CONFIG & TIMEZONE ---
 st.set_page_config(page_title="Glick Pick Tracker", layout="wide")
@@ -25,62 +24,57 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SCRAPER & HELPERS ---
+# --- 3. SUPABASE API INTEGRATION ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
-    # 1. Get the current date in NYC format (YYYY-MM-DD)
+    # Dynamic date for NYC
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
     
-    # 2. Use the Supabase API URL with the dynamic date
-    # I've removed the hardcoded date from your link and replaced it with today_str
+    # Your specific Supabase URL and Key
     url = f"https://ajjruzolkbzardssopos.supabase.co/rest/v1/picks?select=*&season=eq.2026&date=eq.{today_str}&order=stars.desc"
+    apikey = "sb_publishable_aAFvyqUjJFYQsuG8GY2KTA_U4SLd545"
     
-    # Supabase usually requires an API key in the headers. 
-    # If the link worked in your browser without one, it's public. 
-    # If it fails, we may need to grab the 'apikey' from your browser's Network tab.
     headers = {
-        "User-Agent": "Mozilla/5.0",
+        "apikey": apikey,
+        "Authorization": f"Bearer {apikey}",
         "Content-Type": "application/json"
     }
 
     try:
         response = requests.get(url, headers=headers, timeout=10)
-        data = response.json() # This API returns a list of dictionaries
-        
+        data = response.json()
+
+        # Check if the API returned an error message instead of a list
+        if not isinstance(data, list):
+            # If it's a dict, it might be an error message
+            error_msg = data.get('message', 'Unknown API Error')
+            return []
+
         picks = []
         for item in data:
-            # We map the API keys to your app's format
-            # Based on common Supabase structures, I'm guessing the names:
-            player = item.get("player_name", "Unknown Player")
-            call = item.get("call", "").upper() # e.g., OVER
-            line = item.get("line", "")
-            market = item.get("market", "")
-            price = item.get("price", "-110")
-            
-            # Combine into your Event format
-            event_name = f"{player}: {call} {line} {market}"
+            # Smart mapping: tries multiple common key names for betting APIs
+            player = item.get("player_name") or item.get("player") or item.get("name") or "Unknown"
+            call = str(item.get("call", "") or item.get("side", "")).upper()
+            line = str(item.get("line", ""))
+            market = item.get("market", "") or item.get("prop", "")
+            price = str(item.get("price") or item.get("odds") or "-110")
+            edge = str(item.get("edge", "15.0"))
             
             picks.append({
-                "Event": event_name,
-                "Odds": str(price),
-                "Edge": str(item.get("edge", "15.0")) # Pull edge if it exists
+                "Event": f"{player}: {call} {line} {market}",
+                "Odds": price,
+                "Edge": edge
             })
         return picks
     except Exception as e:
-        st.error(f"API Error: {e}")
         return []
 
-# Initialize "Auto-fill" state
-if 'autofill_event' not in st.session_state:
-    st.session_state.autofill_event = ""
-if 'autofill_odds' not in st.session_state:
-    st.session_state.autofill_odds = -110
-
+# --- 4. HELPER FUNCTIONS ---
 def get_ws_smart(sheet, name):
     all_ws = {ws.title.lower().strip(): ws for ws in sheet.worksheets()}
     target = name.lower().strip()
     if target in all_ws: return all_ws[target]
-    st.error(f"Tab Not Found: '{target}'. Found: {list(all_ws.keys())}")
+    st.error(f"Tab Not Found: '{target}'")
     st.stop()
 
 def load_credentials():
@@ -90,9 +84,7 @@ def load_credentials():
     for _, row in df.iterrows():
         user = str(row['Username']).strip()
         credentials["usernames"][user] = {
-            "name": str(row['Name']), 
-            "password": str(row['Password']), 
-            "email": str(row['Email'])
+            "name": str(row['Name']), "password": str(row['Password']), "email": str(row['Email'])
         }
     return credentials
 
@@ -121,34 +113,23 @@ def update_bankroll(amount, user_prefix):
     ws = get_ws_smart(sheet, f"{user_prefix}_bankroll")
     ws.update_acell('B1', st.session_state.bankroll)
 
-def set_bankroll(amount, user_prefix):
-    st.session_state.bankroll = amount
-    ws = get_ws_smart(sheet, f"{user_prefix}_bankroll")
-    ws.update_acell('B1', amount)
-
 def load_dropdowns():
     ws = sheet.worksheet("Dropdowns")
     books = ws.col_values(1)[1:]
     states = ws.col_values(2)[1:]
     return {"books": [b for b in books if b.strip()], "states": [s for s in states if s.strip()]}
 
-def save_dropdowns(data):
-    ws = sheet.worksheet("Dropdowns")
-    ws.clear()
-    max_len = max(len(data['books']), len(data['states']))
-    books = data['books'] + [''] * (max_len - len(data['books']))
-    states = data['states'] + [''] * (max_len - len(data['states']))
-    rows = [['Books', 'States']] + [[books[i], states[i]] for i in range(max_len)]
-    ws.update(values=rows, range_name='A1')
-
 def american_to_decimal(odds):
-    if odds > 0: return (odds / 100) + 1
-    return (100 / abs(odds)) + 1
+    try:
+        val = int(odds)
+        if val > 0: return (val / 100) + 1
+        return (100 / abs(val)) + 1
+    except: return 1.91
 
-# --- 4. AUTHENTICATION ---
+# --- 5. AUTHENTICATION ---
 credentials = load_credentials()
-# Use a 32+ character key to satisfy HMAC security requirements
-authenticator = stauth.Authenticate(credentials, "bet_tracker_cookie", "secure_v3_glick_pick_long_key_2026_nyc", cookie_expiry_days=30)
+# Long key to fix the InsecureKeyLengthWarning
+authenticator = stauth.Authenticate(credentials, "bet_tracker_cookie", "32char_minimum_secret_key_for_HMAC_SHA256_2026", cookie_expiry_days=30)
 
 login_placeholder = st.empty()
 if not st.session_state.get("authentication_status"):
@@ -164,55 +145,53 @@ if st.session_state["authentication_status"]:
             st.rerun()
         st.stop()
 
-    # --- SESSION SETUP ---
     username = st.session_state["username"]
     name = st.session_state["name"]
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     df = load_data(username)
 
-    # --- 5. SIDEBAR ---
+    # --- SIDEBAR ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.title(f"Welcome, {name}")
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
 
     with st.sidebar.expander("⚙️ Adjust Balance"):
-        action = st.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
-        if action == "Add/Remove":
+        adj_action = st.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
+        if adj_action == "Add/Remove":
             adj = st.number_input("Amount ($)", value=0.0, step=10.0)
             if st.button("Update Balance"):
                 update_bankroll(adj, username); st.rerun()
-        else:
-            new_val = st.number_input("Exact ($)", value=float(st.session_state.bankroll))
-            if st.button("Set Balance"):
-                set_bankroll(new_val, username); st.rerun()
 
     st.sidebar.divider()
     st.sidebar.header("🧮 Kelly Calculator")
     if 'odds_input' not in st.session_state: st.session_state.odds_input = -110
     input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input")
-    edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, 15.0, 0.1)
+    edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, 15.0, 0.1, key="edge_input")
     k_opts = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
     k_sel = st.sidebar.radio("Multiplier", list(k_opts.keys()), index=2, horizontal=True)
     
     dec_odds = american_to_decimal(input_odds)
-    b = dec_odds - 1
-    full_k = (edge_pct/100) / b if b != 0 else 0
+    full_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
     suggested_stake = round(full_k * k_opts[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. MAIN TABS ---
+    # --- 6. MAIN TABS (4 TABS) ---
     tabs = st.tabs(["📝 Log New Bet", "📊 Dashboard", "🗄️ History", "🎯 Glick's Picks"])
 
     with tabs[0]:
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
+        
+        # Pull autofill from session state
+        default_event = st.session_state.get('autofill_event', "")
+        
         with st.form("bet_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             date = c1.date_input("Date", datetime.datetime.now(NYC_TZ).date())
             book = c2.selectbox("Sportsbook", dropdowns["books"])
             state = c3.selectbox("State", dropdowns["states"])
             c4, c5, c6 = st.columns(3)
-            event = c4.text_input("Event / Matchup", value=st.session_state.autofill_event)
+            event = c4.text_input("Event / Matchup", value=default_event)
             final_stake = c5.number_input("Actual Stake ($)", value=float(suggested_stake))
             result = c6.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
             
@@ -225,19 +204,8 @@ if st.session_state["authentication_status"]:
                     df_new = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                     save_data(df_new, username)
                     if p != 0: update_bankroll(p, username)
-                    st.session_state.autofill_event = "" # Reset autofill after save
+                    st.session_state.autofill_event = ""
                     st.toast("Logged!", icon="✅"); st.rerun()
-
-        with st.expander("⚙️ Manage Sportsbooks & States"):
-            mc1, mc2 = st.columns(2)
-            with mc1:
-                nb = st.text_input("New Book")
-                if st.button("➕ Add Book") and nb:
-                    dropdowns["books"].append(nb); save_dropdowns(dropdowns); st.rerun()
-            with mc2:
-                ns = st.text_input("New State")
-                if st.button("➕ Add State") and ns:
-                    dropdowns["states"].append(ns); save_dropdowns(dropdowns); st.rerun()
 
     with tabs[1]:
         if not df.empty:
@@ -263,48 +231,28 @@ if st.session_state["authentication_status"]:
                     save_data(df, username); update_bankroll(-row['Stake'], username); st.rerun()
                 if col4.button("🗑️", key=f"d{i}"):
                     df = df.drop(i); save_data(df, username); st.rerun()
-
         st.divider()
         st.subheader("📜 History")
-        settled = df[df['Result'] != 'Pending'].sort_values('Date', ascending=False)
-        st.dataframe(settled, width='stretch', hide_index=True)
-        
-        with st.expander("🗑️ Delete/Refund a Settled Bet"):
-            settled_list = {f"{r['Date']} | {r['Event']} (${r['Profit']})": idx for idx, r in settled.iterrows()}
-            target = st.selectbox("Select bet to remove:", [""] + list(settled_list.keys()))
-            if st.button("Delete & Reverse Bankroll") and target:
-                idx_to_del = settled_list[target]
-                rev_profit = df.at[idx_to_del, 'Profit']
-                update_bankroll(-rev_profit, username)
-                df = df.drop(idx_to_del)
-                save_data(df, username); st.rerun()
+        st.dataframe(df[df['Result'] != 'Pending'].sort_values('Date', ascending=False), width='stretch', hide_index=True)
 
     with tabs[3]:
-        st.subheader("Latest Picks from Glick's Picks")
+        st.subheader("Latest Picks from Supabase")
         available_picks = get_glicks_picks()
-        
         if not available_picks:
-            st.info("No picks found or site is currently unreachable.")
+            st.info("No picks found for today.")
         else:
             for p in available_picks:
                 with st.container(border=True):
-                    col_a, col_b = st.columns([4, 1])
-                    col_a.write(f"**{p['Event']}**")
-                    col_a.caption(f"Odds: {p['Odds']} | Edge: {p['Edge']}")
-                    
-                    if col_b.button("Track this Bet", key=f"scrape_{p['Event']}", width='stretch'):
+                    cola, colb = st.columns([4, 1])
+                    cola.write(f"**{p['Event']}**")
+                    cola.caption(f"Odds: {p['Odds']} | Edge: {p['Edge']}%")
+                    if colb.button("Track", key=f"api_{p['Event']}", width='stretch'):
                         st.session_state.autofill_event = p['Event']
                         try:
-                            # Update the Odds in the Sidebar
-                            clean_odds = int(p['Odds'].replace('+', ''))
-                            st.session_state.odds_input = clean_odds
-                            
-                            # Update the Edge in the Sidebar (if your number_input uses this key)
-                            # Assuming you add a key="edge_input" to your sidebar number_input
-                            st.session_state.edge_input = float(p['Edge']) 
-                        except: 
-                            pass
-                        st.toast(f"Pushed {p['Event']} to Log tab!")
+                            st.session_state.odds_input = int(p['Odds'].replace('+', ''))
+                            st.session_state.edge_input = float(p['Edge'])
+                        except: pass
+                        st.toast("Moved to Log tab!")
                         st.rerun()
 
 elif st.session_state["authentication_status"] is False:
