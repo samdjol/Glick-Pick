@@ -24,7 +24,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Smarter Mapping) ---
+# --- 3. SUPABASE API (Smart Search Logic) ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -39,51 +39,40 @@ def get_glicks_picks():
         if not isinstance(data, list): return []
 
         picks = []
-        known_books = ["FanDuel", "BetMGM", "Caesars", "ESPN", "Rivers", "Bovada", "Bet365", "DraftKings", "Pinnacle"]
+        known_books = ["FanDuel", "BetMGM", "Caesars", "ESPN", "Rivers", "Bovada", "Bet365", "DraftKings", "Pinnacle", "Hard Rock"]
         
         for item in data:
-            # 1. Player/Event Name
             player = item.get("player_name") or item.get("player") or "Unknown"
             line = str(item.get("line", ""))
             market = item.get("market") or item.get("prop") or ""
             
-            # 2. OVER/UNDER Search
+            # Find OVER/UNDER
             call = ""
             for v in item.values():
                 if str(v).upper() in ["OVER", "UNDER"]:
                     call = str(v).upper()
                     break
 
-            # 3. SMARTER ODDS SEARCH (Priority Mapping)
-            # We try common names first, then search while excluding IDs
-            price = item.get("price") or item.get("odds") or item.get("payout")
-            if not price:
-                for k, v in item.items():
-                    if "id" in k.lower(): continue # Skip anything with "id" in the name
-                    try:
-                        num_v = int(v)
-                        # Typical odds are between -1000 and 1000, but NOT between -99 and 99
-                        if abs(num_v) >= 100 and abs(num_v) <= 1200:
-                            price = str(num_v)
-                            break
-                    except: continue
-            
-            price = str(price) if price else "-110"
-            if not price.startswith(('-', '+')):
-                if int(price) > 0: price = f"+{price}"
+            # Find ODDS (Smart Range Search)
+            price = "-110"
+            for k, v in item.items():
+                if "id" in k.lower() or "star" in k.lower(): continue
+                try:
+                    num_v = int(v)
+                    if 100 <= abs(num_v) <= 1200:
+                        price = str(num_v)
+                        if num_v > 0 and not str(v).startswith('+'): price = f"+{num_v}"
+                        break
+                except: continue
 
-            # 4. BOOK SEARCH
+            # Find BOOK
             book = "DraftKings"
             for v in item.values():
                 if any(kb.lower() in str(v).lower() for kb in known_books):
-                    book = str(v)
+                    book = next(kb for kb in known_books if kb.lower() in str(v).lower())
                     break
             
-            picks.append({
-                "Event": f"{player}: {call} {line} {market}",
-                "Price": price,
-                "Book": book
-            })
+            picks.append({"Event": f"{player}: {call} {line} {market}", "Price": price, "Book": book})
         return picks
     except: return []
 
@@ -153,7 +142,7 @@ def save_dropdowns(data):
 
 def american_to_decimal(odds):
     try:
-        val = int(odds)
+        val = int(str(odds).replace('+', ''))
         if val > 0: return (val / 100) + 1
         return (100 / abs(val)) + 1
     except: return 1.91
@@ -170,7 +159,7 @@ if not st.session_state.get("authentication_status"):
 if st.session_state["authentication_status"]:
     login_placeholder.empty()
     if 'dashboard_entered' not in st.session_state:
-        st.success(f"Logged in!")
+        st.success("Logged in!")
         if st.button("🚀 Enter Dashboard", width='stretch'):
             st.session_state['dashboard_entered'] = True
             st.rerun()
@@ -181,7 +170,7 @@ if st.session_state["authentication_status"]:
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     df_current = load_data(username)
 
-    # --- SIDEBAR ---
+    # --- SIDEBAR: REINSTATED MANAGEMENT ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.title(f"Welcome, {name}")
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
@@ -210,14 +199,23 @@ if st.session_state["authentication_status"]:
     suggested_stake = round(full_k * k_map[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. NAVIGATION CONTROLLER ---
+    # --- 6. NAVIGATION CONTROLLER (THE AUTO-SWITCHER) ---
     nav_labels = ["🎯 Glick's Picks", "📝 Log New Bet", "📊 Dashboard", "🗄️ History"]
+    
+    # 1. Check for requested redirect before drawing the nav bar
     if st.session_state.get('redirect_to'):
-        st.session_state['nav_bar'] = st.session_state['redirect_to']
-        del st.session_state['redirect_to']
-    if 'nav_bar' not in st.session_state: st.session_state['nav_bar'] = nav_labels[0]
+        st.session_state['nav_bar_key'] = st.session_state['redirect_to']
+        del st.session_state['redirect_to'] # Clear redirect
+    
+    # 2. Set default page if missing
+    if 'nav_bar_key' not in st.session_state:
+        st.session_state['nav_bar_key'] = nav_labels[0]
 
-    active_page = st.segmented_control("Navigation", nav_labels, selection_mode="single", key="nav_bar", label_visibility="collapsed")
+    # 3. Draw the Navigation Segmented Control
+    active_page = st.segmented_control(
+        "Navigation", nav_labels, selection_mode="single", 
+        key="nav_bar_key", label_visibility="collapsed"
+    )
     st.divider()
 
     # --- 7. CONTENT ---
@@ -234,19 +232,20 @@ if st.session_state["authentication_status"]:
                     if cb.button("Track", key=f"api_{p['Event']}", width='stretch'):
                         st.session_state.autofill_event = p['Event']
                         st.session_state.autofill_book = p['Book']
-                        try: st.session_state.odds_input = int(p['Price'].replace('+', ''))
+                        try:
+                            # Update the Sidebar Odds instantly
+                            st.session_state.odds_input = int(str(p['Price']).replace('+', ''))
                         except: pass
+                        # Trigger the Auto-Switch Controller
                         st.session_state['redirect_to'] = "📝 Log New Bet"
                         st.rerun()
 
     elif active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
-        
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
             dropdowns["books"].append(def_bk); save_dropdowns(dropdowns)
-        
         book_idx = dropdowns["books"].index(def_bk) if def_bk in dropdowns["books"] else 0
 
         with st.form("bet_form", clear_on_submit=True):
@@ -264,9 +263,9 @@ if st.session_state["authentication_status"]:
                     if res == "Win": p = round(stake * (dec_odds - 1), 2)
                     elif res == "Loss": p = -stake
                     new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": odds_in, "Edge": edge_in/100, "Stake": stake, "Result": res, "Profit": p}
-                    df_all = load_data(username)
-                    df_all = pd.concat([df_all, pd.DataFrame([new_row])], ignore_index=True)
-                    save_data(df_all, username)
+                    df_master = load_data(username)
+                    df_master = pd.concat([df_master, pd.DataFrame([new_row])], ignore_index=True)
+                    save_data(df_master, username)
                     if p != 0: update_bankroll(p, username)
                     st.session_state.autofill_event = ""; st.session_state.autofill_book = ""
                     st.toast("Logged!", icon="✅"); st.rerun()
@@ -313,7 +312,7 @@ if st.session_state["authentication_status"]:
         
         with st.expander("🗑️ Delete/Refund a Settled Bet"):
             settled_list = {f"{r['Date']} | {r['Event']} (${r['Profit']})": idx for idx, r in settled.iterrows()}
-            target = st.selectbox("Select bet:", [""] + list(settled_list.keys()))
+            target = st.selectbox("Select bet to remove:", [""] + list(settled_list.keys()))
             if st.button("Delete & Reverse Bankroll") and target:
                 idx_to_del = settled_list[target]
                 update_bankroll(-df_current.at[idx_to_del, 'Profit'], username)
