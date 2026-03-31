@@ -24,7 +24,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Book-First Mapping) ---
+# --- 3. SUPABASE API (Direct Key Mapping) ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -39,67 +39,47 @@ def get_glicks_picks():
         if not isinstance(data, list): return []
 
         picks = []
+        # Mapping raw database slugs to clean display names
         book_map = {
+            "betrivers": "BetRivers", "rivers": "BetRivers",
+            "espnbet": "ESPN Bet", "espn": "ESPN Bet",
+            "fanduel": "FanDuel", "fd": "FanDuel",
+            "betmgm": "BetMGM", "mgm": "BetMGM",
             "caesars": "Caesars", "caesar": "Caesars", "caeser": "Caesars",
-            "rivers": "BetRivers", "espn": "ESPN Bet", "fanduel": "FanDuel",
-            "mgm": "BetMGM", "draftkings": "DraftKings", "dk": "DraftKings", 
-            "fd": "FanDuel", "pinnacle": "Pinnacle", "bovada": "Bovada", "bet365": "Bet365"
+            "draftkings": "DraftKings", "dk": "DraftKings",
+            "pinnacle": "Pinnacle", "bovada": "Bovada", "bet365": "Bet365"
         }
         
         for item in data:
-            # 1. Basic Info
-            player = item.get("player_name") or item.get("player") or "Unknown"
+            # 1. Map Keys Exactly from your JSON sample
+            player = item.get("player", "Unknown")
+            call = str(item.get("direction", "")).upper()
             line = str(item.get("line", ""))
-            market = item.get("market") or item.get("prop") or ""
+            market = item.get("market", "")
             
-            # 2. OVER/UNDER (Search values only)
-            call = ""
-            for v in item.values():
-                if str(v).upper() in ["OVER", "UNDER"]:
-                    call = str(v).upper()
+            # 2. Grab Best Price & Best Book directly
+            raw_price = item.get("best_price", -110)
+            raw_book = str(item.get("best_book", "draftkings")).lower()
+            
+            # Format price string (+113, -150, etc.)
+            price_str = f"+{raw_price}" if raw_price > 0 else str(raw_price)
+            
+            # Clean up the book name using our map
+            book_name = "DraftKings" # Default
+            for slug, display in book_map.items():
+                if slug in raw_book:
+                    book_name = display
                     break
-
-            # 3. BEST ODDS (Book-First Search)
-            candidates = []
-            for k, v in item.items():
-                k_lower = k.lower()
-                # Find if this key belongs to a specific book
-                matched_book = None
-                for trigger, display in book_map.items():
-                    if trigger in k_lower:
-                        matched_book = display
-                        break
-                
-                if matched_book:
-                    try:
-                        num_v = int(v)
-                        # Filter out things like 'stars' or 'id' even if book name matches
-                        if "id" in k_lower or "star" in k_lower or "rank" in k_lower:
-                            continue
-                        if 100 <= abs(num_v) <= 1500:
-                            candidates.append({"price": num_v, "book": matched_book})
-                    except: continue
-
-            # Compare and pick best
-            if candidates:
-                def payout_val(p): return p['price'] if p['price'] > 0 else (10000 / abs(p['price']))
-                best = max(candidates, key=payout_val)
-                price_str = f"+{best['price']}" if best['price'] > 0 else str(best['price'])
-                book_name = best['book']
-            else:
-                # Fallback to standard search if no book-specific keys found
-                price_str, book_name = "-110", "DraftKings"
             
             picks.append({
                 "Event": f"{player}: {call} {line} {market}",
                 "Price": price_str,
-                "Book": book_name,
-                "Raw": item # For debugging
+                "Book": book_name
             })
         return picks
     except: return []
 
-# --- 4. HELPERS ---
+# --- 4. DATA HELPERS ---
 def get_ws_smart(sheet, name):
     all_ws = {ws.title.lower().strip(): ws for ws in sheet.worksheets()}
     target = name.lower().strip()
@@ -214,15 +194,15 @@ if st.session_state["authentication_status"]:
     
     odds_in = st.sidebar.number_input("American Odds", step=1, key="odds_input")
     edge_in = st.sidebar.number_input("Edge (%)", 0.0, 100.0, step=0.1, key="edge_input")
+    k_sel = st.sidebar.radio("Multiplier", ["Full", "Half", "Quarter"], index=2, horizontal=True)
     k_map = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
-    k_sel = st.sidebar.radio("Multiplier", list(k_map.keys()), index=2, horizontal=True)
     
     dec_odds = american_to_decimal(odds_in)
     full_k = (edge_in/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
     suggested_stake = round(full_k * k_map[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. NAVIGATION CONTROLLER (AUTO-SWITCH) ---
+    # --- 6. NAV CONTROLLER (AUTO-SWITCH) ---
     nav_labels = ["🎯 Glick's Picks", "📝 Log New Bet", "📊 Dashboard", "🗄️ History"]
     if st.session_state.get('redirect_to'):
         st.session_state['nav_bar_key'] = st.session_state['redirect_to']
@@ -247,18 +227,17 @@ if st.session_state["authentication_status"]:
                         st.session_state.autofill_event = p['Event']
                         st.session_state.autofill_book = p['Book']
                         try:
+                            # Update the Sidebar Odds instantly with the BEST price
                             st.session_state.odds_input = int(str(p['Price']).replace('+', ''))
                         except: pass
                         st.session_state['redirect_to'] = "📝 Log New Bet"
                         st.rerun()
-            
-            with st.expander("🛠️ Developer Debug (Click if data is wrong)"):
-                st.write("Raw data from first pick:")
-                if picks: st.json(picks[0]['Raw'])
 
     elif active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
+        
+        # Auto-select tracked book
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
             dropdowns["books"].append(def_bk); save_dropdowns(dropdowns)
@@ -279,9 +258,9 @@ if st.session_state["authentication_status"]:
                     if res == "Win": p = round(stake * (dec_odds - 1), 2)
                     elif res == "Loss": p = -stake
                     new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": odds_in, "Edge": edge_in/100, "Stake": stake, "Result": res, "Profit": p}
-                    df_all = load_data(username)
-                    df_all = pd.concat([df_all, pd.DataFrame([new_row])], ignore_index=True)
-                    save_data(df_all, username)
+                    df_master = load_data(username)
+                    df_master = pd.concat([df_master, pd.DataFrame([new_row])], ignore_index=True)
+                    save_data(df_master, username)
                     if p != 0: update_bankroll(p, username)
                     st.session_state.autofill_event = ""; st.session_state.autofill_book = ""
                     st.toast("Logged!", icon="✅"); st.rerun()
