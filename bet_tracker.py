@@ -325,7 +325,7 @@ if st.session_state["authentication_status"]:
                 with st.container(border=True):
                     col1, col2, col3, col4 = st.columns([3, 1, 1, 0.5])
                     col1.write(f"**{row['Event']}** | {row['Book']} ({row['Odds']})")
-                    col1.write(f"💰 Wager: ${row['Stake']:.2f} | 📈 Potential Profit: ${pot_profit:.2f}")
+                    col1.write(f"💰 Wager: **\${row['Stake']:.2f}** | 📈 Potential Profit: **\${pot_profit:.2f}**")
                     
                     if col2.button("✅ Win", key=f"w{i}"):
                         p = round(pot_profit, 2)
