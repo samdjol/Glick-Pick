@@ -25,7 +25,7 @@ def init_gsheets():
 sheet = init_gsheets()
 
 # --- 3. SUPABASE API (Direct Key Mapping) ---
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
     url = f"https://ajjruzolkbzardssopos.supabase.co/rest/v1/picks?select=*&season=eq.2026&date=eq.{today_str}&order=stars.desc"
