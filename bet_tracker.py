@@ -29,22 +29,46 @@ sheet = init_gsheets()
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
     url = "https://glicks-picks.com/picks.html"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    }
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
         picks = []
-        # Update logic based on Glick's actual HTML structure
-        rows = soup.find_all('tr')[1:] 
-        for row in rows:
-            cols = row.find_all('td')
-            if len(cols) >= 3:
+
+        # Find all pick cards
+        cards = soup.find_all('div', class_='pick-card')
+        
+        for card in cards:
+            try:
+                # Scrape the specific parts of the card
+                player = card.find('div', class_='pick-card-player').text.strip()
+                # Direction can be 'OVER' or 'UNDER'
+                direction = card.find('span', class_=lambda x: x and 'pick-direction' in x).text.strip()
+                line = card.find('span', class_='pick-line').text.strip()
+                market = card.find('span', class_='pick-card-market').text.strip()
+                odds = card.find('span', class_='pick-card-price').text.strip()
+                
+                # Check if there's an 'Edge' displayed on the card, otherwise default to 15.0
+                edge_tag = card.find('span', class_='pick-card-edge') 
+                edge = edge_tag.text.strip().replace('%', '') if edge_tag else "15.0"
+
+                # Combine into a readable Event name
+                # Example: "Roki Sasaki OVER 3.5 Hits Allowed"
+                event_name = f"{player} {direction} {line} {market}"
+                
                 picks.append({
-                    "Event": cols[0].text.strip(),
-                    "Odds": cols[1].text.strip(),
-                    "Edge": cols[2].text.strip()
+                    "Event": event_name,
+                    "Odds": odds,
+                    "Edge": edge
                 })
+            except Exception:
+                continue # Skip if a single card is missing data
+                
         return picks
-    except Exception:
+    except Exception as e:
+        st.error(f"Scraper error: {e}")
         return []
 
 # Initialize "Auto-fill" state
@@ -272,10 +296,16 @@ if st.session_state["authentication_status"]:
                     if col_b.button("Track this Bet", key=f"scrape_{p['Event']}", width='stretch'):
                         st.session_state.autofill_event = p['Event']
                         try:
+                            # Update the Odds in the Sidebar
                             clean_odds = int(p['Odds'].replace('+', ''))
                             st.session_state.odds_input = clean_odds
-                        except: pass
-                        st.toast(f"Moved {p['Event']} to Log tab!")
+                            
+                            # Update the Edge in the Sidebar (if your number_input uses this key)
+                            # Assuming you add a key="edge_input" to your sidebar number_input
+                            st.session_state.edge_input = float(p['Edge']) 
+                        except: 
+                            pass
+                        st.toast(f"Pushed {p['Event']} to Log tab!")
                         st.rerun()
 
 elif st.session_state["authentication_status"] is False:
