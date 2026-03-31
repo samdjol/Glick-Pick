@@ -32,6 +32,7 @@ def clean_book_name(raw_book):
     lookup = str(raw_book).lower().replace("_", "").replace(" ", "")
     mapping = {
         "williamhillus": "Caesars",
+        "williamhill_us": "Caesars",
         "caesars": "Caesars",
         "caesarssportsbook": "Caesars",
         "draftkings": "DraftKings",
@@ -47,16 +48,25 @@ def clean_book_name(raw_book):
     return mapping.get(lookup, str(raw_book).title())
 
 def get_matchup_string(item):
-    """Constructs: 'PlayerTeam vs/at Opponent'"""
-    opp = item.get("opponent", "")
+    """
+    Constructs the matchup label based on home/away/opponent data.
+    Goal: [Team vs/at Opponent]
+    """
+    opp = item.get("opponent", "Unknown")
     home = item.get("home_team", "")
     away = item.get("away_team", "")
     
-    if home and not away:
+    # Priority 1: Home Team is filled -> Player is on Home Team (vs)
+    if home and home.strip():
         return f"{home} vs {opp}"
-    elif away and not home:
+    
+    # Priority 2: Away Team is filled -> Player is on Away Team (at)
+    if away and away.strip():
         return f"{away} at {opp}"
-    return opp if opp else ""
+    
+    # Priority 3: Fallback if home/away are missing but we have opponent
+    # (Tries to prevent just showing '[CIN]')
+    return f"??? vs {opp}" if opp != "Unknown" else "Matchup TBD"
 
 @st.cache_data(ttl=300)
 def get_glicks_picks():
@@ -72,25 +82,33 @@ def get_glicks_picks():
 
         picks = []
         for item in data:
-            # Matchup Logic
+            # Build Matchup Component
             matchup = get_matchup_string(item)
-            p_name = item.get("player") or "Unknown"
+            
+            # Identify components for the pick description
+            p_name = item.get("player") or "Unknown Player"
             p_dir = str(item.get("direction", "")).upper()
             p_line = str(item.get("line", ""))
             p_mkt = item.get("market", "")
             
-            # Combine for Event title
+            # Construct Event: [Team vs Opponent] Player: DIR LINE MARKET
             event = f"[{matchup}] {p_name}: {p_dir} {p_line} {p_mkt}"
             
-            # Price & Book
-            raw_p = item.get("best_price", -110)
-            price = f"+{raw_p}" if raw_p > 0 else str(raw_p)
-            book = clean_book_name(item.get("best_book", "DraftKings"))
+            # Price Processing (Handles both +112 and 112 formats)
+            raw_p = item.get("best_price") or item.get("Price", -110)
+            if isinstance(raw_p, str):
+                price = raw_p if raw_p.startswith(('-', '+')) else f"+{raw_p}"
+            else:
+                price = f"+{raw_p}" if raw_p > 0 else str(raw_p)
+            
+            # Book Standardization
+            book_key = item.get("best_book") or item.get("Book", "DraftKings")
+            book = clean_book_name(book_key)
             
             # Time & Sorting
             display_time = item.get("game_time") or "TBD"
             sort_key = "23:59"
-            if display_time != "TBD":
+            if display_time and display_time != "TBD":
                 try:
                     t_str = display_time.replace(" ET", "").strip()
                     t_obj = datetime.datetime.strptime(t_str, "%I:%M %p")
@@ -105,9 +123,12 @@ def get_glicks_picks():
                 "SortKey": sort_key
             })
         
+        # Sort chronologically by the internal SortKey
         picks.sort(key=lambda x: x['SortKey'])
         return picks
-    except: return []
+    except Exception as e:
+        # Silently fail for UI, or log error if needed
+        return []
 
 # --- 4. DATA HELPERS ---
 def get_ws_smart(sheet, name):
