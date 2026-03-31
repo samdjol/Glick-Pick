@@ -24,10 +24,11 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Over/Under Search) ---
+# --- 3. SUPABASE API (Now pulling Price & Book) ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
+    # Querying the picks table - bringing in price and book
     url = f"https://ajjruzolkbzardssopos.supabase.co/rest/v1/picks?select=*&season=eq.2026&date=eq.{today_str}&order=stars.desc"
     apikey = "sb_publishable_aAFvyqUjJFYQsuG8GY2KTA_U4SLd545"
     
@@ -48,7 +49,16 @@ def get_glicks_picks():
             call = str(item.get("direction") or item.get("call") or item.get("side") or "").upper()
             line = str(item.get("line", ""))
             market = item.get("market") or item.get("prop") or ""
-            picks.append({"Event": f"{player}: {call} {line} {market}"})
+            
+            # New fields for odds and books
+            price = item.get("price") or item.get("odds") or "-110"
+            book = item.get("book") or item.get("sportsbook") or "DraftKings"
+            
+            picks.append({
+                "Event": f"{player}: {call} {line} {market}",
+                "Price": str(price),
+                "Book": book
+            })
         return picks
     except:
         return []
@@ -147,7 +157,7 @@ if st.session_state["authentication_status"]:
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     df = load_data(username)
 
-    # --- SIDEBAR: REINSTATED BALANCE ADJUSTMENT ---
+    # --- SIDEBAR ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.title(f"Welcome, {name}")
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
@@ -167,6 +177,7 @@ if st.session_state["authentication_status"]:
     st.sidebar.header("🧮 Kelly Calculator")
     if 'odds_input' not in st.session_state: st.session_state.odds_input = -110
     if 'edge_input' not in st.session_state: st.session_state.edge_input = 15.0
+    
     input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input")
     edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, step=0.1, key="edge_input")
     k_sel = st.sidebar.radio("Multiplier", ["Full", "Half", "Quarter"], index=2, horizontal=True)
@@ -198,19 +209,43 @@ if st.session_state["authentication_status"]:
                 with st.container(border=True):
                     ca, cb = st.columns([4, 1])
                     ca.write(f"**{p['Event']}**")
+                    ca.caption(f"Best Odds: {p['Price']} at {p['Book']}")
                     if cb.button("Track", key=f"api_{p['Event']}", width='stretch'):
+                        # 1. Update Autofill Session State
                         st.session_state.autofill_event = p['Event']
+                        # 2. Update Sidebar Odds
+                        try:
+                            st.session_state.odds_input = int(p['Price'].replace('+', ''))
+                        except: pass
+                        # 3. Store the Book name to select in Log tab
+                        st.session_state.autofill_book = p['Book']
+                        # 4. Trigger Redirect
                         st.session_state['redirect_to'] = "📝 Log New Bet"
                         st.rerun()
 
     elif active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
+        
+        # Pull values from Track session state
         default_ev = st.session_state.get('autofill_event', "")
+        default_bk = st.session_state.get('autofill_book', dropdowns["books"][0])
+        
+        # Handle index for the book selectbox
+        book_idx = 0
+        if default_bk in dropdowns["books"]:
+            book_idx = dropdowns["books"].index(default_bk)
+        elif default_bk:
+            # If the book from the site isn't in your dropdown, add it
+            dropdowns["books"].append(default_bk)
+            save_dropdowns(dropdowns)
+            book_idx = len(dropdowns["books"]) - 1
+
         with st.form("bet_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             date = c1.date_input("Date", datetime.datetime.now(NYC_TZ).date())
-            book = c2.selectbox("Sportsbook", dropdowns["books"])
+            # UPDATED: Select the book pulled from Glick's Picks
+            book = c2.selectbox("Sportsbook", dropdowns["books"], index=book_idx)
             state = c3.selectbox("State", dropdowns["states"])
             c4, c5, c6 = st.columns(3)
             event = c4.text_input("Event / Matchup", value=default_ev)
@@ -222,10 +257,12 @@ if st.session_state["authentication_status"]:
                     if res == "Win": p = round(stake * (dec_odds - 1), 2)
                     elif res == "Loss": p = -stake
                     new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": input_odds, "Edge": edge_pct/100, "Stake": stake, "Result": res, "Profit": p}
-                    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-                    save_data(df, username)
+                    df_all = load_data(username) # Reload to ensure current
+                    df_all = pd.concat([df_all, pd.DataFrame([new_row])], ignore_index=True)
+                    save_data(df_all, username)
                     if p != 0: update_bankroll(p, username)
                     st.session_state.autofill_event = ""
+                    st.session_state.autofill_book = ""
                     st.toast("Logged!", icon="✅"); st.rerun()
 
         with st.expander("⚙️ Manage Sportsbooks & States"):
