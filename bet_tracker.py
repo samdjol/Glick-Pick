@@ -24,7 +24,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Clean Naming Edition) ---
+# --- 3. SUPABASE API (Best Odds Comparison Edition) ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -39,26 +39,16 @@ def get_glicks_picks():
         if not isinstance(data, list): return []
 
         picks = []
-        # Mapping triggers in data to your preferred display names
         book_map = {
-            "rivers": "BetRivers",
-            "espn": "ESPN Bet",
-            "fanduel": "FanDuel",
-            "mgm": "BetMGM",
-            "caesars": "Caesars",
-            "draftkings": "DraftKings",
-            "dk": "DraftKings",
-            "fd": "FanDuel",
-            "pinnacle": "Pinnacle",
-            "bovada": "Bovada",
-            "365": "Bet365"
+            "rivers": "BetRivers", "espn": "ESPN Bet", "fanduel": "FanDuel",
+            "mgm": "BetMGM", "caesar": "Caesars", "caeser": "Caesars", # Catching typos
+            "draftkings": "DraftKings", "dk": "DraftKings", "fd": "FanDuel",
+            "pinnacle": "Pinnacle", "bovada": "Bovada", "365": "Bet365"
         }
         
         for item in data:
-            # Player/Event
             player = item.get("player_name") or item.get("player") or "Unknown"
             line = str(item.get("line", ""))
-            market = item.get("market") or item.get("prop") or ""
             
             # Find OVER/UNDER
             call = ""
@@ -67,36 +57,64 @@ def get_glicks_picks():
                     call = str(v).upper()
                     break
 
-            # Find ODDS (Priority mapping, then search)
-            price = None
-            for k in ["price", "odds", "payout"]:
-                if k in item and item[k]:
-                    price = str(item[k])
-                    break
-            if not price:
-                for k, v in item.items():
-                    if "id" in k.lower(): continue
+            # Find Market
+            market = item.get("market") or item.get("prop") or ""
+
+            # --- BEST ODDS LOGIC ---
+            # Instead of stopping at the first one, we collect all odds found in this row
+            candidates = []
+            for k, v in item.items():
+                val_str = str(v).lower()
+                key_str = str(k).lower()
+                
+                # Check if this key or value mentions a book
+                found_book = None
+                for trigger, display in book_map.items():
+                    if trigger in key_str or trigger in val_str:
+                        found_book = display
+                        break
+                
+                # If we found a book context, look for the price nearby
+                if found_book:
+                    # Look for the price in this specific key's value
                     try:
                         num_v = int(v)
                         if 100 <= abs(num_v) <= 1200:
-                            price = str(num_v)
-                            break
-                    except: continue
-            
-            price = str(price) if price else "-110"
-            if not price.startswith(('-', '+')) and int(price) > 0: price = f"+{price}"
+                            candidates.append({"price": num_v, "book": found_book})
+                    except:
+                        # Sometimes price is in a separate key like 'caesars_price'
+                        # We'll handle that by searching all keys for numbers
+                        pass
 
-            # Find BOOK using the new mapping
-            book = "DraftKings" # Default
-            for v in item.values():
-                val_str = str(v).lower()
-                for trigger, display in book_map.items():
-                    if trigger in val_str:
-                        book = display
-                        break
-                if book != "DraftKings": break
+            # If the specific book-search failed, do a general sweep
+            if not candidates:
+                for k, v in item.items():
+                    if "id" in str(k).lower(): continue
+                    try:
+                        num_v = int(v)
+                        if 100 <= abs(num_v) <= 1200:
+                            candidates.append({"price": num_v, "book": "DraftKings"})
+                    except: continue
+
+            # Compare candidates to find the highest payout
+            if candidates:
+                # Helper to compare American Odds (higher is better)
+                # Favorite (-110) < Underdog (+110)
+                def get_payout_val(p):
+                    return p if p > 0 else (10000 / abs(p))
+                
+                best_pick = max(candidates, key=lambda x: get_payout_val(x['price']))
+                price_str = str(best_pick['price'])
+                if best_pick['price'] > 0: price_str = f"+{price_str}"
+                book_name = best_pick['book']
+            else:
+                price_str, book_name = "-110", "DraftKings"
             
-            picks.append({"Event": f"{player}: {call} {line} {market}", "Price": price, "Book": book})
+            picks.append({
+                "Event": f"{player}: {call} {line} {market}",
+                "Price": price_str,
+                "Book": book_name
+            })
         return picks
     except: return []
 
@@ -223,7 +241,7 @@ if st.session_state["authentication_status"]:
     suggested_stake = round(full_k * k_map[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. NAV CONTROLLER ---
+    # --- 6. NAV CONTROLLER (AUTO-SWITCHER) ---
     nav_labels = ["🎯 Glick's Picks", "📝 Log New Bet", "📊 Dashboard", "🗄️ History"]
     if st.session_state.get('redirect_to'):
         st.session_state['nav_bar_key'] = st.session_state['redirect_to']
@@ -248,7 +266,7 @@ if st.session_state["authentication_status"]:
                         st.session_state.autofill_event = p['Event']
                         st.session_state.autofill_book = p['Book']
                         try:
-                            # OVERWRITE Sidebar Odds with the pick's price
+                            # Update the Sidebar Odds instantly with the BEST price
                             st.session_state.odds_input = int(str(p['Price']).replace('+', ''))
                         except: pass
                         st.session_state['redirect_to'] = "📝 Log New Bet"
@@ -258,7 +276,7 @@ if st.session_state["authentication_status"]:
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
         
-        # Determine Book selection (Auto-select if "Tracked")
+        # Determine Book selection
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
             dropdowns["books"].append(def_bk); save_dropdowns(dropdowns)
@@ -320,6 +338,7 @@ if st.session_state["authentication_status"]:
                     save_data(df_current, username); update_bankroll(-row['Stake'], username); st.rerun()
                 if col4.button("🗑️", key=f"d{i}"):
                     df_current = df_current.drop(i); save_data(df_current, username); st.rerun()
+        
         st.divider()
         st.subheader("📜 History")
         settled = df_current[df_current['Result'] != 'Pending'].sort_values('Date', ascending=False)
