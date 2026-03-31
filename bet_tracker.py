@@ -24,7 +24,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Best Odds Comparison Edition) ---
+# --- 3. SUPABASE API (Advanced Filtering Edition) ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -41,72 +41,57 @@ def get_glicks_picks():
         picks = []
         book_map = {
             "rivers": "BetRivers", "espn": "ESPN Bet", "fanduel": "FanDuel",
-            "mgm": "BetMGM", "caesar": "Caesars", "caeser": "Caesars", # Catching typos
+            "mgm": "BetMGM", "caesar": "Caesars", "caeser": "Caesars",
             "draftkings": "DraftKings", "dk": "DraftKings", "fd": "FanDuel",
             "pinnacle": "Pinnacle", "bovada": "Bovada", "365": "Bet365"
         }
         
+        # Columns that are definitely NOT odds
+        forbidden_keys = ["id", "stars", "season", "date", "created_at", "player_id", "updated_at", "rank"]
+
         for item in data:
+            # 1. Player/Event Name
             player = item.get("player_name") or item.get("player") or "Unknown"
             line = str(item.get("line", ""))
+            market = item.get("market") or item.get("prop") or ""
             
-            # Find OVER/UNDER
+            # 2. OVER/UNDER Call
             call = ""
             for v in item.values():
                 if str(v).upper() in ["OVER", "UNDER"]:
                     call = str(v).upper()
                     break
 
-            # Find Market
-            market = item.get("market") or item.get("prop") or ""
-
-            # --- BEST ODDS LOGIC ---
-            # Instead of stopping at the first one, we collect all odds found in this row
+            # 3. BEST ODDS CALCULATION
             candidates = []
             for k, v in item.items():
-                val_str = str(v).lower()
-                key_str = str(k).lower()
+                k_lower = k.lower()
+                # Skip IDs and meta-data
+                if any(fk in k_lower for fk in forbidden_keys): continue
                 
-                # Check if this key or value mentions a book
-                found_book = None
+                # Check for book context in the column name
+                current_book = None
                 for trigger, display in book_map.items():
-                    if trigger in key_str or trigger in val_str:
-                        found_book = display
+                    if trigger in k_lower:
+                        current_book = display
                         break
                 
-                # If we found a book context, look for the price nearby
-                if found_book:
-                    # Look for the price in this specific key's value
-                    try:
-                        num_v = int(v)
-                        if 100 <= abs(num_v) <= 1200:
-                            candidates.append({"price": num_v, "book": found_book})
-                    except:
-                        # Sometimes price is in a separate key like 'caesars_price'
-                        # We'll handle that by searching all keys for numbers
-                        pass
+                try:
+                    num_v = int(v)
+                    # American odds range (-1500 to +1500)
+                    if 100 <= abs(num_v) <= 1500:
+                        candidates.append({
+                            "price": num_v, 
+                            "book": current_book if current_book else "DraftKings"
+                        })
+                except: continue
 
-            # If the specific book-search failed, do a general sweep
-            if not candidates:
-                for k, v in item.items():
-                    if "id" in str(k).lower(): continue
-                    try:
-                        num_v = int(v)
-                        if 100 <= abs(num_v) <= 1200:
-                            candidates.append({"price": num_v, "book": "DraftKings"})
-                    except: continue
-
-            # Compare candidates to find the highest payout
             if candidates:
-                # Helper to compare American Odds (higher is better)
-                # Favorite (-110) < Underdog (+110)
-                def get_payout_val(p):
-                    return p if p > 0 else (10000 / abs(p))
-                
-                best_pick = max(candidates, key=lambda x: get_payout_val(x['price']))
-                price_str = str(best_pick['price'])
-                if best_pick['price'] > 0: price_str = f"+{price_str}"
-                book_name = best_pick['book']
+                # Find the pick with the highest payout
+                def payout_val(p): return p['price'] if p['price'] > 0 else (10000 / abs(p['price']))
+                best = max(candidates, key=payout_val)
+                price_str = f"+{best['price']}" if best['price'] > 0 else str(best['price'])
+                book_name = best['book']
             else:
                 price_str, book_name = "-110", "DraftKings"
             
@@ -118,7 +103,7 @@ def get_glicks_picks():
         return picks
     except: return []
 
-# --- 4. DATA HELPERS ---
+# --- 4. HELPERS & AUTH ---
 def get_ws_smart(sheet, name):
     all_ws = {ws.title.lower().strip(): ws for ws in sheet.worksheets()}
     target = name.lower().strip()
@@ -233,15 +218,15 @@ if st.session_state["authentication_status"]:
     
     odds_in = st.sidebar.number_input("American Odds", step=1, key="odds_input")
     edge_in = st.sidebar.number_input("Edge (%)", 0.0, 100.0, step=0.1, key="edge_input")
-    k_sel = st.sidebar.radio("Multiplier", ["Full", "Half", "Quarter"], index=2, horizontal=True)
     k_map = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
+    k_sel = st.sidebar.radio("Multiplier", list(k_map.keys()), index=2, horizontal=True)
     
     dec_odds = american_to_decimal(odds_in)
     full_k = (edge_in/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
     suggested_stake = round(full_k * k_map[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. NAV CONTROLLER (AUTO-SWITCHER) ---
+    # --- 6. NAVIGATION CONTROLLER (AUTO-SWITCH) ---
     nav_labels = ["🎯 Glick's Picks", "📝 Log New Bet", "📊 Dashboard", "🗄️ History"]
     if st.session_state.get('redirect_to'):
         st.session_state['nav_bar_key'] = st.session_state['redirect_to']
@@ -266,7 +251,6 @@ if st.session_state["authentication_status"]:
                         st.session_state.autofill_event = p['Event']
                         st.session_state.autofill_book = p['Book']
                         try:
-                            # Update the Sidebar Odds instantly with the BEST price
                             st.session_state.odds_input = int(str(p['Price']).replace('+', ''))
                         except: pass
                         st.session_state['redirect_to'] = "📝 Log New Bet"
@@ -276,7 +260,6 @@ if st.session_state["authentication_status"]:
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
         
-        # Determine Book selection
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
             dropdowns["books"].append(def_bk); save_dropdowns(dropdowns)
@@ -297,9 +280,9 @@ if st.session_state["authentication_status"]:
                     if res == "Win": p = round(stake * (dec_odds - 1), 2)
                     elif res == "Loss": p = -stake
                     new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": odds_in, "Edge": edge_in/100, "Stake": stake, "Result": res, "Profit": p}
-                    df_master = load_data(username)
-                    df_master = pd.concat([df_master, pd.DataFrame([new_row])], ignore_index=True)
-                    save_data(df_master, username)
+                    df_all = load_data(username)
+                    df_all = pd.concat([df_all, pd.DataFrame([new_row])], ignore_index=True)
+                    save_data(df_all, username)
                     if p != 0: update_bankroll(p, username)
                     st.session_state.autofill_event = ""; st.session_state.autofill_book = ""
                     st.toast("Logged!", icon="✅"); st.rerun()
