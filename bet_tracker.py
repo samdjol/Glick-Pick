@@ -24,7 +24,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Smart Mapper Edition) ---
+# --- 3. SUPABASE API (Smarter Mapping) ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -42,29 +42,37 @@ def get_glicks_picks():
         known_books = ["FanDuel", "BetMGM", "Caesars", "ESPN", "Rivers", "Bovada", "Bet365", "DraftKings", "Pinnacle"]
         
         for item in data:
-            # A. Find Player/Event Name
+            # 1. Player/Event Name
             player = item.get("player_name") or item.get("player") or "Unknown"
             line = str(item.get("line", ""))
             market = item.get("market") or item.get("prop") or ""
             
-            # B. Smart Search for OVER/UNDER
+            # 2. OVER/UNDER Search
             call = ""
             for v in item.values():
                 if str(v).upper() in ["OVER", "UNDER"]:
                     call = str(v).upper()
                     break
 
-            # C. Smart Search for ODDS (Look for numbers <= -100 or >= 100)
-            price = "-110"
-            for k, v in item.items():
-                try:
-                    num_v = int(v)
-                    if abs(num_v) >= 100:
-                        price = str(num_v)
-                        break
-                except: continue
+            # 3. SMARTER ODDS SEARCH (Priority Mapping)
+            # We try common names first, then search while excluding IDs
+            price = item.get("price") or item.get("odds") or item.get("payout")
+            if not price:
+                for k, v in item.items():
+                    if "id" in k.lower(): continue # Skip anything with "id" in the name
+                    try:
+                        num_v = int(v)
+                        # Typical odds are between -1000 and 1000, but NOT between -99 and 99
+                        if abs(num_v) >= 100 and abs(num_v) <= 1200:
+                            price = str(num_v)
+                            break
+                    except: continue
+            
+            price = str(price) if price else "-110"
+            if not price.startswith(('-', '+')):
+                if int(price) > 0: price = f"+{price}"
 
-            # D. Smart Search for BOOK
+            # 4. BOOK SEARCH
             book = "DraftKings"
             for v in item.values():
                 if any(kb.lower() in str(v).lower() for kb in known_books):
@@ -171,7 +179,7 @@ if st.session_state["authentication_status"]:
     username = st.session_state["username"]
     name = st.session_state["name"]
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
-    df = load_data(username)
+    df_current = load_data(username)
 
     # --- SIDEBAR ---
     authenticator.logout('Logout', 'sidebar')
@@ -202,7 +210,7 @@ if st.session_state["authentication_status"]:
     suggested_stake = round(full_k * k_map[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. NAVIGATION ---
+    # --- 6. NAVIGATION CONTROLLER ---
     nav_labels = ["🎯 Glick's Picks", "📝 Log New Bet", "📊 Dashboard", "🗄️ History"]
     if st.session_state.get('redirect_to'):
         st.session_state['nav_bar'] = st.session_state['redirect_to']
@@ -235,7 +243,6 @@ if st.session_state["authentication_status"]:
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
         
-        # Determine Book selection
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
             dropdowns["books"].append(def_bk); save_dropdowns(dropdowns)
@@ -264,7 +271,7 @@ if st.session_state["authentication_status"]:
                     st.session_state.autofill_event = ""; st.session_state.autofill_book = ""
                     st.toast("Logged!", icon="✅"); st.rerun()
 
-        with st.expander("⚙️ Manage Sportsbooks & States"):
+        with st.expander("⚙️ Manage Dropdowns"):
             mc1, mc2 = st.columns(2)
             with mc1:
                 nb = st.text_input("New Book")
@@ -276,32 +283,32 @@ if st.session_state["authentication_status"]:
                     dropdowns["states"].append(ns); save_dropdowns(dropdowns); st.rerun()
 
     elif active_page == "📊 Dashboard":
-        if not df.empty:
-            st.metric("Total P/L", f"${df['Profit'].sum():,.2f}")
-            fdf = df.sort_values('Date')
+        if not df_current.empty:
+            st.metric("Total P/L", f"${df_current['Profit'].sum():,.2f}")
+            fdf = df_current.sort_values('Date')
             fdf['Cumulative Profit'] = fdf['Profit'].cumsum()
             st.plotly_chart(px.line(fdf, x='Date', y='Cumulative Profit', title="Profit Trend", markers=True), width='stretch')
 
     elif active_page == "🗄️ History":
         st.subheader("🏟️ Active Wagers")
-        pending = df[df['Result'] == 'Pending']
+        pending = df_current[df_current['Result'] == 'Pending']
         for i, row in pending.iterrows():
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([3, 1, 1, 0.5])
                 col1.write(f"**{row['Event']}** | {row['Book']}")
                 if col2.button("✅ Win", key=f"w{i}"):
                     p = row['Stake'] * (american_to_decimal(row['Odds']) - 1)
-                    df.at[i, 'Result'], df.at[i, 'Profit'] = 'Win', round(p, 2)
-                    save_data(df, username); update_bankroll(p, username); st.rerun()
+                    df_current.at[i, 'Result'], df_current.at[i, 'Profit'] = 'Win', round(p, 2)
+                    save_data(df_current, username); update_bankroll(p, username); st.rerun()
                 if col3.button("❌ Loss", key=f"l{i}"):
-                    df.at[i, 'Result'], df.at[i, 'Profit'] = 'Loss', -row['Stake']
-                    save_data(df, username); update_bankroll(-row['Stake'], username); st.rerun()
+                    df_current.at[i, 'Result'], df_current.at[i, 'Profit'] = 'Loss', -row['Stake']
+                    save_data(df_current, username); update_bankroll(-row['Stake'], username); st.rerun()
                 if col4.button("🗑️", key=f"d{i}"):
-                    df = df.drop(i); save_data(df, username); st.rerun()
+                    df_current = df_current.drop(i); save_data(df_current, username); st.rerun()
         
         st.divider()
         st.subheader("📜 History")
-        settled = df[df['Result'] != 'Pending'].sort_values('Date', ascending=False)
+        settled = df_current[df_current['Result'] != 'Pending'].sort_values('Date', ascending=False)
         st.dataframe(settled, width='stretch', hide_index=True)
         
         with st.expander("🗑️ Delete/Refund a Settled Bet"):
@@ -309,9 +316,9 @@ if st.session_state["authentication_status"]:
             target = st.selectbox("Select bet:", [""] + list(settled_list.keys()))
             if st.button("Delete & Reverse Bankroll") and target:
                 idx_to_del = settled_list[target]
-                update_bankroll(-df.at[idx_to_del, 'Profit'], username)
-                df = df.drop(idx_to_del)
-                save_data(df, username); st.rerun()
+                update_bankroll(-df_current.at[idx_to_del, 'Profit'], username)
+                df_current = df_current.drop(idx_to_del)
+                save_data(df_current, username); st.rerun()
 
 elif st.session_state["authentication_status"] is False:
     st.error("Incorrect credentials")
