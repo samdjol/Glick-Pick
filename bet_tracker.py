@@ -24,7 +24,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Direct JSON Target) ---
+# --- 3. SUPABASE API (Direct JSON Extraction) ---
 @st.cache_data(ttl=300)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -40,32 +40,33 @@ def get_glicks_picks():
 
         picks = []
         for item in data:
-            # STRICT TARGETING: Using the top-level keys from your JSON
-            book_display = item.get("Book")
-            price_display = item.get("Price")
-            event_display = item.get("Event")
+            # surgical extraction of the specific keys you identified
+            event = item.get("Event")
+            price = item.get("Price")
+            book = item.get("Book")
             
-            # Smart Fallbacks: Only trigger if the primary keys are missing
-            if not event_display:
+            # If the top-level keys exist, use them. If not, use raw fallbacks.
+            if event and price and book:
+                picks.append({
+                    "Event": str(event),
+                    "Price": str(price),
+                    "Book": str(book)
+                })
+            else:
+                # Fallback logic for raw database format
                 p_name = item.get("player") or "Unknown"
                 p_dir = str(item.get("direction", "")).upper()
                 p_line = str(item.get("line", ""))
                 p_mkt = item.get("market", "")
-                event_display = f"{p_name}: {p_dir} {p_line} {p_mkt}"
-            
-            if not price_display:
-                raw_p = item.get("best_price", -110)
-                price_display = f"+{raw_p}" if raw_p > 0 else str(raw_p)
                 
-            if not book_display:
-                # We only look at best_book if 'Book' is null
-                book_display = item.get("best_book", "DraftKings")
-
-            picks.append({
-                "Event": event_display,
-                "Price": str(price_display),
-                "Book": str(book_display)
-            })
+                raw_p = item.get("best_price", -110)
+                formatted_p = f"+{raw_p}" if raw_p > 0 else str(raw_p)
+                
+                picks.append({
+                    "Event": f"{p_name}: {p_dir} {p_line} {p_mkt}",
+                    "Price": formatted_p,
+                    "Book": item.get("best_book", "DraftKings").title()
+                })
         return picks
     except: return []
 
@@ -158,12 +159,12 @@ if st.session_state["authentication_status"]:
     # --- 6. NAVIGATION & STATE CONTROLLER ---
     if st.session_state.get('pending_track'):
         track_data = st.session_state.pending_track
-        # Update Sidebar Odds
+        # Force Sidebar Odds Update
         st.session_state['odds_input'] = track_data['odds']
-        # Set Autofills
+        # Set Autofills for Log Tab
         st.session_state.autofill_event = track_data['event']
         st.session_state.autofill_book = track_data['book']
-        # Switch Active Tab
+        # Switch Active Page
         st.session_state['nav_bar_key'] = "📝 Log New Bet"
         del st.session_state['pending_track']
 
@@ -224,17 +225,20 @@ if st.session_state["authentication_status"]:
             for p in picks:
                 with st.container(border=True):
                     ca, cb = st.columns([4, 1])
+                    # Display the surgical JSON data
                     ca.write(f"**{p['Event']}**")
-                    ca.caption(f"Best Odds: {p['Price']} at {p['Book']}")
+                    ca.write(f"🏦 {p['Book']} | 📈 {p['Price']}")
+                    
                     if cb.button("Track", key=f"api_{p['Event']}", width='stretch'):
                         try:
-                            # Strip '+' and push to sidebar session state
+                            # Convert "+112" string into an integer 112 for sidebar
                             clean_odds = int(str(p['Price']).replace('+', ''))
                         except:
                             clean_odds = -110
+                            
                         st.session_state.pending_track = {
-                            "event": p['Event'], 
-                            "book": p['Book'], 
+                            "event": p['Event'],
+                            "book": p['Book'],
                             "odds": clean_odds
                         }
                         st.rerun()
@@ -242,6 +246,7 @@ if st.session_state["authentication_status"]:
     elif active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
+        
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
             dropdowns["books"].append(def_bk)
@@ -299,7 +304,7 @@ if st.session_state["authentication_status"]:
         settled = df_current[df_current['Result'] != 'Pending'].sort_values('Date', ascending=False)
         st.dataframe(settled, width='stretch', hide_index=True)
         
-        # RESTORED: Delete settled bets tool
+        # RESTORED: Delete/Refund Settled Bet tool
         with st.expander("🗑️ Delete/Refund a Settled Bet"):
             if not settled.empty:
                 settled_list = {f"{r['Date']} | {r['Event']} (${r['Profit']})": idx for idx, r in settled.iterrows()}
@@ -310,7 +315,7 @@ if st.session_state["authentication_status"]:
                     update_bankroll(-profit_to_reverse, username)
                     df_final = df_current.drop(idx_to_del)
                     save_data(df_final, username)
-                    st.toast("Settled bet removed and bankroll adjusted!")
+                    st.toast("Settled bet removed!")
                     st.rerun()
 
 elif st.session_state["authentication_status"] is False:
