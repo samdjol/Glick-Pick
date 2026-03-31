@@ -24,7 +24,32 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Direct Key Extraction with Raw Data for Debugging) ---
+# --- 3. SUPABASE API & BOOK MAPPING ---
+def clean_book_name(raw_book):
+    """Maps raw API book names to standardized display names."""
+    if not raw_book:
+        return "DraftKings"
+    
+    # Normalize: lowercase and remove underscores/spaces
+    lookup = str(raw_book).lower().replace("_", "").replace(" ", "")
+    
+    mapping = {
+        "williamhillus": "Caesars",
+        "caesars": "Caesars",
+        "caesarssportsbook": "Caesars",
+        "draftkings": "DraftKings",
+        "fanduel": "FanDuel",
+        "betmgm": "BetMGM",
+        "bovada": "Bovada",
+        "bodog": "Bovada",
+        "betrivers": "BetRivers",
+        "sugarhouse": "BetRivers",
+        "espnbet": "ESPN Bet",
+        "barstool": "ESPN Bet"
+    }
+    
+    return mapping.get(lookup, str(raw_book).title())
+
 @st.cache_data(ttl=300)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -40,12 +65,12 @@ def get_glicks_picks():
 
         picks = []
         for item in data:
-            # We try to pull the formatted keys first
+            # Extraction logic
             event = item.get("Event")
             price = item.get("Price")
-            book = item.get("Book")
+            book_raw = item.get("Book") or item.get("best_book")
             
-            # Fallback if the top-level keys are missing
+            # Fallback for Event name
             if not event:
                 p_name = item.get("player") or "Unknown"
                 p_dir = str(item.get("direction", "")).upper()
@@ -53,18 +78,18 @@ def get_glicks_picks():
                 p_mkt = item.get("market", "")
                 event = f"{p_name}: {p_dir} {p_line} {p_mkt}"
             
+            # Fallback for Price
             if not price:
                 raw_p = item.get("best_price", -110)
                 price = f"+{raw_p}" if raw_p > 0 else str(raw_p)
                 
-            if not book:
-                book = item.get("best_book", "DraftKings").title()
+            # Standardize the Book Name
+            book = clean_book_name(book_raw)
 
             picks.append({
                 "Event": str(event),
                 "Price": str(price),
-                "Book": str(book),
-                "Raw": item  # Keeping the full JSON for the debugger
+                "Book": str(book)
             })
         return picks
     except: return []
@@ -158,12 +183,9 @@ if st.session_state["authentication_status"]:
     # --- 6. NAVIGATION & STATE CONTROLLER ---
     if st.session_state.get('pending_track'):
         track_data = st.session_state.pending_track
-        # Update Sidebar Odds
         st.session_state['odds_input'] = track_data['odds']
-        # Set Autofill info
         st.session_state.autofill_event = track_data['event']
         st.session_state.autofill_book = track_data['book']
-        # Switch Active Page
         st.session_state['nav_bar_key'] = "📝 Log New Bet"
         del st.session_state['pending_track']
 
@@ -229,7 +251,6 @@ if st.session_state["authentication_status"]:
                     
                     if cb.button("Track", key=f"api_{p['Event']}", width='stretch'):
                         try:
-                            # Pull Price directly, strip '+', update sidebar
                             clean_odds = int(str(p['Price']).replace('+', ''))
                         except:
                             clean_odds = -110
@@ -240,20 +261,17 @@ if st.session_state["authentication_status"]:
                             "odds": clean_odds
                         }
                         st.rerun()
-            
-            # --- DEBUGGER RESTORED ---
-            st.divider()
-            with st.expander("🛠️ API Debug (Inspect Raw JSON)"):
-                st.write("Examine the full structure below. Look for the capitalized 'Book' key.")
-                st.json(picks)
 
     elif active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
+        
+        # Ensure the autofilled book exists in dropdowns
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
             dropdowns["books"].append(def_bk)
             save_dropdowns(dropdowns)
+            
         book_idx = dropdowns["books"].index(def_bk) if def_bk in dropdowns["books"] else 0
 
         with st.form("bet_form", clear_on_submit=True):
