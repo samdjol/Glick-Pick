@@ -30,45 +30,46 @@ sheet = init_gsheets()
 def get_glicks_picks():
     url = "https://glicks-picks.com/picks.html"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
     try:
         response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Look for the grid container first
+        grid = soup.find('div', class_='picks-grid')
+        if not grid:
+            return [] # This confirms the page is empty when BeautifulSoup sees it
+
+        cards = grid.find_all('div', class_='pick-card')
         picks = []
 
-        # Find all pick cards
-        cards = soup.find_all('div', class_='pick-card')
-        
         for card in cards:
             try:
-                # Scrape the specific parts of the card
-                player = card.find('div', class_='pick-card-player').text.strip()
-                # Direction can be 'OVER' or 'UNDER'
-                direction = card.find('span', class_=lambda x: x and 'pick-direction' in x).text.strip()
-                line = card.find('span', class_='pick-line').text.strip()
-                market = card.find('span', class_='pick-card-market').text.strip()
-                odds = card.find('span', class_='pick-card-price').text.strip()
+                # 1. Player Name
+                player = card.find('div', class_='pick-card-player').get_text(strip=True)
                 
-                # Check if there's an 'Edge' displayed on the card, otherwise default to 15.0
-                edge_tag = card.find('span', class_='pick-card-edge') 
-                edge = edge_tag.text.strip().replace('%', '') if edge_tag else "15.0"
-
-                # Combine into a readable Event name
-                # Example: "Roki Sasaki OVER 3.5 Hits Allowed"
-                event_name = f"{player} {direction} {line} {market}"
+                # 2. The Call (Direction + Line + Market)
+                # target 'pick-direction', 'pick-line', and 'pick-card-market'
+                direction = card.find('span', class_=lambda x: x and 'pick-direction' in x).get_text(strip=True)
+                line = card.find('span', class_='pick-line').get_text(strip=True)
+                market = card.find('span', class_='pick-card-market').get_text(strip=True)
+                
+                # 3. Sportsbook & Price (from pick-card-book)
+                book_div = card.find('div', class_='pick-card-book')
+                # The sportsbook is naked text inside the div, after the span
+                book_name = book_div.find(text=True, recursive=False).strip()
+                price = book_div.find('span', class_='pick-card-price').get_text(strip=True)
                 
                 picks.append({
-                    "Event": event_name,
-                    "Odds": odds,
-                    "Edge": edge
+                    "Event": f"{player}: {direction} {line} {market} ({book_name})",
+                    "Odds": price,
+                    "Edge": "15.0"
                 })
             except Exception:
-                continue # Skip if a single card is missing data
-                
+                continue
         return picks
-    except Exception as e:
-        st.error(f"Scraper error: {e}")
+    except:
         return []
 
 # Initialize "Auto-fill" state
