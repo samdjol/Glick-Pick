@@ -24,13 +24,10 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API INTEGRATION ---
+# --- 3. SUPABASE API (Surgical Event Fetcher) ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
-    # Dynamic date for NYC
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
-    
-    # Your specific Supabase URL and Key
     url = f"https://ajjruzolkbzardssopos.supabase.co/rest/v1/picks?select=*&season=eq.2026&date=eq.{today_str}&order=stars.desc"
     apikey = "sb_publishable_aAFvyqUjJFYQsuG8GY2KTA_U4SLd545"
     
@@ -43,30 +40,18 @@ def get_glicks_picks():
     try:
         response = requests.get(url, headers=headers, timeout=10)
         data = response.json()
-
-        # Check if the API returned an error message instead of a list
-        if not isinstance(data, list):
-            # If it's a dict, it might be an error message
-            error_msg = data.get('message', 'Unknown API Error')
-            return []
+        if not isinstance(data, list): return []
 
         picks = []
         for item in data:
-            # Smart mapping: tries multiple common key names for betting APIs
-            player = item.get("player_name") or item.get("player") or item.get("name") or "Unknown"
-            call = str(item.get("call", "") or item.get("side", "")).upper()
+            player = item.get("player_name") or item.get("player") or "Unknown"
+            call = str(item.get("call", "")).upper()
             line = str(item.get("line", ""))
             market = item.get("market", "") or item.get("prop", "")
-            price = str(item.get("price") or item.get("odds") or "-110")
-            edge = str(item.get("edge", "15.0"))
             
-            picks.append({
-                "Event": f"{player}: {call} {line} {market}",
-                "Odds": price,
-                "Edge": edge
-            })
+            picks.append({"Event": f"{player}: {call} {line} {market}"})
         return picks
-    except Exception as e:
+    except:
         return []
 
 # --- 4. HELPER FUNCTIONS ---
@@ -128,8 +113,7 @@ def american_to_decimal(odds):
 
 # --- 5. AUTHENTICATION ---
 credentials = load_credentials()
-# Long key to fix the InsecureKeyLengthWarning
-authenticator = stauth.Authenticate(credentials, "bet_tracker_cookie", "32char_minimum_secret_key_for_HMAC_SHA256_2026", cookie_expiry_days=30)
+authenticator = stauth.Authenticate(credentials, "bet_tracker_cookie", "secure_v3_glick_pick_long_key_2026_nyc", cookie_expiry_days=30)
 
 login_placeholder = st.empty()
 if not st.session_state.get("authentication_status"):
@@ -150,7 +134,7 @@ if st.session_state["authentication_status"]:
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     df = load_data(username)
 
-    # --- SIDEBAR ---
+    # --- SIDEBAR (THE SOURCE OF TRUTH) ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.title(f"Welcome, {name}")
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
@@ -164,9 +148,14 @@ if st.session_state["authentication_status"]:
 
     st.sidebar.divider()
     st.sidebar.header("🧮 Kelly Calculator")
+    
+    # SETTING STEADY DEFAULTS HERE (-110 and 15%)
     if 'odds_input' not in st.session_state: st.session_state.odds_input = -110
+    if 'edge_input' not in st.session_state: st.session_state.edge_input = 15.0
+
     input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input")
-    edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, 15.0, 0.1, key="edge_input")
+    edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, step=0.1, key="edge_input")
+    
     k_opts = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
     k_sel = st.sidebar.radio("Multiplier", list(k_opts.keys()), index=2, horizontal=True)
     
@@ -175,14 +164,12 @@ if st.session_state["authentication_status"]:
     suggested_stake = round(full_k * k_opts[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. MAIN TABS (4 TABS) ---
+    # --- 6. MAIN TABS ---
     tabs = st.tabs(["📝 Log New Bet", "📊 Dashboard", "🗄️ History", "🎯 Glick's Picks"])
 
     with tabs[0]:
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
-        
-        # Pull autofill from session state
         default_event = st.session_state.get('autofill_event', "")
         
         with st.form("bet_form", clear_on_submit=True):
@@ -192,6 +179,7 @@ if st.session_state["authentication_status"]:
             state = c3.selectbox("State", dropdowns["states"])
             c4, c5, c6 = st.columns(3)
             event = c4.text_input("Event / Matchup", value=default_event)
+            # Uses Sidebar's suggested stake
             final_stake = c5.number_input("Actual Stake ($)", value=float(suggested_stake))
             result = c6.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
             
@@ -200,6 +188,7 @@ if st.session_state["authentication_status"]:
                     p = 0
                     if result == "Win": p = round(final_stake * (dec_odds - 1), 2)
                     elif result == "Loss": p = -final_stake
+                    # LOGGING USING SIDEBAR ODDS/EDGE
                     new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": input_odds, "Edge": edge_pct/100, "Stake": final_stake, "Result": result, "Profit": p}
                     df_new = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                     save_data(df_new, username)
@@ -245,14 +234,11 @@ if st.session_state["authentication_status"]:
                 with st.container(border=True):
                     cola, colb = st.columns([4, 1])
                     cola.write(f"**{p['Event']}**")
-                    cola.caption(f"Odds: {p['Odds']} | Edge: {p['Edge']}%")
+                    cola.caption("Using Odds & Edge from your Sidebar settings.")
                     if colb.button("Track", key=f"api_{p['Event']}", width='stretch'):
+                        # ONLY carry over the Event name
                         st.session_state.autofill_event = p['Event']
-                        try:
-                            st.session_state.odds_input = int(p['Odds'].replace('+', ''))
-                            st.session_state.edge_input = float(p['Edge'])
-                        except: pass
-                        st.toast("Moved to Log tab!")
+                        st.toast(f"Pushed {p['Event']} to Log tab!")
                         st.rerun()
 
 elif st.session_state["authentication_status"] is False:
