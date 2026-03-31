@@ -24,7 +24,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Surgical JSON Extraction) ---
+# --- 3. SUPABASE API (Direct Key Extraction with Raw Data for Debugging) ---
 @st.cache_data(ttl=300)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -40,27 +40,32 @@ def get_glicks_picks():
 
         picks = []
         for item in data:
-            # DIRECT EXTRACTION FROM TOP-LEVEL KEYS
-            # This ignores "best_book" and "williamhill_us" entirely
-            book_val = item.get("Book")
-            price_val = item.get("Price")
-            event_val = item.get("Event")
-
-            # Only append if the specific formatted keys exist
-            if book_val and price_val and event_val:
-                picks.append({
-                    "Event": str(event_val),
-                    "Price": str(price_val),
-                    "Book": str(book_val)
-                })
-            else:
-                # Fallback only if the formatted keys are missing from the API
+            # We try to pull the formatted keys first
+            event = item.get("Event")
+            price = item.get("Price")
+            book = item.get("Book")
+            
+            # Fallback if the top-level keys are missing
+            if not event:
+                p_name = item.get("player") or "Unknown"
+                p_dir = str(item.get("direction", "")).upper()
+                p_line = str(item.get("line", ""))
+                p_mkt = item.get("market", "")
+                event = f"{p_name}: {p_dir} {p_line} {p_mkt}"
+            
+            if not price:
                 raw_p = item.get("best_price", -110)
-                picks.append({
-                    "Event": f"{item.get('player')}: {item.get('direction')} {item.get('line')} {item.get('market')}",
-                    "Price": f"+{raw_p}" if raw_p > 0 else str(raw_p),
-                    "Book": str(item.get("best_book", "DraftKings")).title()
-                })
+                price = f"+{raw_p}" if raw_p > 0 else str(raw_p)
+                
+            if not book:
+                book = item.get("best_book", "DraftKings").title()
+
+            picks.append({
+                "Event": str(event),
+                "Price": str(price),
+                "Book": str(book),
+                "Raw": item  # Keeping the full JSON for the debugger
+            })
         return picks
     except: return []
 
@@ -153,9 +158,9 @@ if st.session_state["authentication_status"]:
     # --- 6. NAVIGATION & STATE CONTROLLER ---
     if st.session_state.get('pending_track'):
         track_data = st.session_state.pending_track
-        # Overwrite Sidebar Odds
+        # Update Sidebar Odds
         st.session_state['odds_input'] = track_data['odds']
-        # Set Autofills
+        # Set Autofill info
         st.session_state.autofill_event = track_data['event']
         st.session_state.autofill_book = track_data['book']
         # Switch Active Page
@@ -180,13 +185,13 @@ if st.session_state["authentication_status"]:
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
 
     with st.sidebar.expander("⚙️ Adjust Balance"):
-        adj_action = st.sidebar.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
+        adj_action = st.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
         if adj_action == "Add/Remove":
-            adj_v = st.sidebar.number_input("Amount ($)", value=0.0)
-            if st.sidebar.button("Update Balance"): update_bankroll(adj_v, username); st.rerun()
+            adj_v = st.number_input("Amount ($)", value=0.0)
+            if st.button("Update Balance"): update_bankroll(adj_v, username); st.rerun()
         else:
-            set_v = st.sidebar.number_input("Exact ($)", value=float(st.session_state.bankroll))
-            if st.sidebar.button("Set Balance"): set_bankroll(set_v, username); st.rerun()
+            set_v = st.number_input("Exact ($)", value=float(st.session_state.bankroll))
+            if st.button("Set Balance"): set_bankroll(set_v, username); st.rerun()
 
     st.sidebar.divider()
     st.sidebar.header("🧮 Kelly Calculator")
@@ -220,7 +225,6 @@ if st.session_state["authentication_status"]:
                 with st.container(border=True):
                     ca, cb = st.columns([4, 1])
                     ca.write(f"**{p['Event']}**")
-                    # Display the Book directly under the Event
                     ca.write(f"🏦 **{p['Book']}** | 📈 **{p['Price']}**")
                     
                     if cb.button("Track", key=f"api_{p['Event']}", width='stretch'):
@@ -236,11 +240,16 @@ if st.session_state["authentication_status"]:
                             "odds": clean_odds
                         }
                         st.rerun()
+            
+            # --- DEBUGGER RESTORED ---
+            st.divider()
+            with st.expander("🛠️ API Debug (Inspect Raw JSON)"):
+                st.write("Examine the full structure below. Look for the capitalized 'Book' key.")
+                st.json(picks)
 
     elif active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
-        
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
             dropdowns["books"].append(def_bk)
@@ -308,7 +317,7 @@ if st.session_state["authentication_status"]:
                     update_bankroll(-profit_to_reverse, username)
                     df_final = df_current.drop(idx_to_del)
                     save_data(df_final, username)
-                    st.toast("Settled bet removed!")
+                    st.toast("Settled bet removed and bankroll adjusted!")
                     st.rerun()
 
 elif st.session_state["authentication_status"] is False:
