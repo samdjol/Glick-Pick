@@ -8,6 +8,8 @@ import gspread
 from google.oauth2.service_account import Credentials
 import streamlit_authenticator as stauth
 import requests
+import plotly.express as px
+import plotly.graph_objects as go
 
 # --- 1. PAGE CONFIG & TIMEZONE ---
 st.set_page_config(page_title="Glick Pick Tracker", layout="wide")
@@ -306,10 +308,31 @@ if st.session_state["authentication_status"]:
 
     elif active_page == "📊 Dashboard":
         if not df_current.empty:
-            st.metric("Total P/L", f"${df_current['Profit'].sum():,.2f}")
-            fdf = df_current.sort_values('Date')
-            fdf['Cumulative Profit'] = fdf['Profit'].cumsum()
-            st.plotly_chart(px.line(fdf, x='Date', y='Cumulative Profit', title="Profit Trend", markers=True), width='stretch')
+            # Aggregate data by date
+            df_dash = df_current.copy()
+            df_dash['Date'] = pd.to_datetime(df_dash['Date'])
+            
+            # Group by day and sum profit
+            daily_profit = df_dash.groupby('Date')['Profit'].sum().reset_index().sort_values('Date')
+            daily_profit['Cumulative Profit'] = daily_profit['Profit'].cumsum()
+            
+            # Metrics
+            total_pl = df_dash['Profit'].sum()
+            win_rate = (len(df_dash[df_dash['Result'] == 'Win']) / len(df_dash[df_dash['Result'].isin(['Win', 'Loss'])])) * 100 if len(df_dash[df_dash['Result'].isin(['Win', 'Loss'])]) > 0 else 0
+            
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Total P/L", f"${total_pl:,.2f}")
+            m2.metric("Win Rate", f"{win_rate:.1f}%")
+            m3.metric("Avg Daily Profit", f"${daily_profit['Profit'].mean():,.2f}")
+
+            # Line Chart: Cumulative Profit
+            fig_line = px.line(daily_profit, x='Date', y='Cumulative Profit', title="Bankroll Over Time (End of Day)", markers=True)
+            st.plotly_chart(fig_line, use_container_width=True)
+            
+            # Bar Chart: Daily Individual Profit
+            fig_bar = px.bar(daily_profit, x='Date', y='Profit', title="Daily Profit/Loss", 
+                             color='Profit', color_continuous_scale=['red', 'gray', 'green'])
+            st.plotly_chart(fig_bar, use_container_width=True)
 
     elif active_page == "🗄️ History":
         st.subheader("🏟️ Active Wagers")
