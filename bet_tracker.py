@@ -8,6 +8,8 @@ from google.oauth2.service_account import Credentials
 import streamlit_authenticator as stauth
 import datetime
 from zoneinfo import ZoneInfo
+import requests
+from bs4 import BeautifulSoup
 
 NYC_TZ = ZoneInfo("America/New_York")
 
@@ -24,6 +26,37 @@ def init_gsheets():
     return client.open_by_url(st.secrets["SHEET_URL"])
 
 sheet = init_gsheets()
+
+@st.cache_data(ttl=3600)
+def get_glicks_picks():
+    url = "https://glicks-picks.com/picks.html"
+    try:
+        response = requests.get(url, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # This part depends on the exact HTML of the site.
+        # I'm assuming the picks are in a table or specific list items.
+        picks = []
+        # Example: Looking for table rows. You might need to adjust 'tr' or 'class' 
+        # based on the actual site source code.
+        rows = soup.find_all('tr')[1:] # Skip header
+        for row in rows:
+            cols = row.find_all('td')
+            if len(cols) >= 3:
+                picks.append({
+                    "Event": cols[0].text.strip(),
+                    "Odds": cols[1].text.strip(),
+                    "Edge": cols[2].text.strip()
+                })
+        return picks
+    except Exception as e:
+        return []
+
+# Initialize "Auto-fill" state so the Log tab knows what to show
+if 'autofill_event' not in st.session_state:
+    st.session_state.autofill_event = ""
+if 'autofill_odds' not in st.session_state:
+    st.session_state.autofill_odds = -110
 
 # --- 3. SMART HELPER FUNCTIONS ---
 def get_ws_smart(sheet, name):
@@ -159,7 +192,7 @@ if st.session_state["authentication_status"]:
             book = c2.selectbox("Sportsbook", dropdowns["books"])
             state = c3.selectbox("State", dropdowns["states"])
             c4, c5, c6 = st.columns(3)
-            event = c4.text_input("Event / Matchup")
+            event = c4.text_input("Event / Matchup", value=st.session_state.autofill_event)
             final_stake = c5.number_input("Actual Stake ($)", value=float(suggested_stake))
             result = c6.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
             
@@ -225,6 +258,34 @@ if st.session_state["authentication_status"]:
                 update_bankroll(-rev_profit, username)
                 df = df.drop(idx_to_del)
                 save_data(df, username); st.rerun()
+
+    with tabs[3]:
+        st.subheader("Latest Picks from Glick's Picks")
+        available_picks = get_glicks_picks()
+        
+        if not available_picks:
+            st.info("No picks found or site is currently unreachable.")
+        else:
+            for p in available_picks:
+                with st.container(border=True):
+                    col1, col2 = st.columns([4, 1])
+                    col1.write(f"**{p['Event']}**")
+                    col1.caption(f"Odds: {p['Odds']} | Edge: {p['Edge']}")
+                    
+                    if col2.button("Track this Bet", key=f"scrape_{p['Event']}"):
+                        # Update the session state
+                        st.session_state.autofill_event = p['Event']
+                        # Attempt to parse the odds string to an int
+                        try:
+                            clean_odds = int(p['Odds'].replace('+', ''))
+                            st.session_state.odds_input = clean_odds # Updates Kelly Calc
+                        except:
+                            pass
+                        
+                        st.toast(f"Moved {p['Event']} to Log tab!")
+                        # Switch to the Log tab (Tab 0)
+                        # Note: You might need to manually click back to Log, 
+                        # but the data will be waiting for you.
 
 elif st.session_state["authentication_status"] is False:
     st.error("Incorrect credentials")
