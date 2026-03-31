@@ -39,12 +39,14 @@ def get_glicks_picks():
         if not isinstance(data, list): return []
 
         picks = []
+        # Mapping raw database slugs to clean display names
+        # Added specific "caesers" and "caeser" typos to fix identification
         book_map = {
             "betrivers": "BetRivers", "rivers": "BetRivers",
             "espnbet": "ESPN Bet", "espn": "ESPN Bet",
             "fanduel": "FanDuel", "fd": "FanDuel",
             "betmgm": "BetMGM", "mgm": "BetMGM",
-            "caesars": "Caesars", "caesar": "Caesars", "caeser": "Caesars",
+            "caesars": "Caesars", "caesar": "Caesars", "caeser": "Caesars", "caesers": "Caesars",
             "draftkings": "DraftKings", "dk": "DraftKings",
             "pinnacle": "Pinnacle", "bovada": "Bovada", "bet365": "Bet365"
         }
@@ -58,7 +60,9 @@ def get_glicks_picks():
             raw_book = str(item.get("best_book", "draftkings")).lower()
             
             price_str = f"+{raw_price}" if raw_price > 0 else str(raw_price)
-            book_name = "DraftKings"
+            
+            # Map the book name
+            book_name = "DraftKings" # Default
             for slug, display in book_map.items():
                 if slug in raw_book:
                     book_name = display
@@ -68,7 +72,7 @@ def get_glicks_picks():
         return picks
     except: return []
 
-# --- 4. DATA HELPERS (Now with Caching to prevent APIErrors) ---
+# --- 4. DATA HELPERS ---
 def get_ws_smart(sheet, name):
     all_ws = {ws.title.lower().strip(): ws for ws in sheet.worksheets()}
     target = name.lower().strip()
@@ -76,7 +80,7 @@ def get_ws_smart(sheet, name):
     st.error(f"Tab Not Found: '{target}'")
     st.stop()
 
-@st.cache_data(ttl=3600) # Cache credentials for 1 hour
+@st.cache_data(ttl=3600)
 def load_credentials():
     ws = sheet.worksheet("Credentials")
     df = pd.DataFrame(ws.get_all_records())
@@ -118,7 +122,7 @@ def set_bankroll(amount, user_prefix):
     ws = get_ws_smart(sheet, f"{user_prefix}_bankroll")
     ws.update_acell('B1', amount)
 
-@st.cache_data(ttl=3600) # Cache dropdowns to save quota
+@st.cache_data(ttl=3600)
 def load_dropdowns():
     ws = sheet.worksheet("Dropdowns")
     books = ws.col_values(1)[1:]
@@ -133,7 +137,7 @@ def save_dropdowns(data):
     states = data['states'] + [''] * (max_len - len(data['states']))
     rows = [['Books', 'States']] + [[books[i], states[i]] for i in range(max_len)]
     ws.update(values=rows, range_name='A1')
-    st.cache_data.clear() # Clear cache so changes show up instantly
+    st.cache_data.clear()
 
 def american_to_decimal(odds):
     try:
@@ -233,7 +237,6 @@ if st.session_state["authentication_status"]:
         dropdowns = load_dropdowns()
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
-            # This will update the sheet and clear the cache
             dropdowns["books"].append(def_bk)
             save_dropdowns(dropdowns)
         book_idx = dropdowns["books"].index(def_bk) if def_bk in dropdowns["books"] else 0
@@ -253,12 +256,23 @@ if st.session_state["authentication_status"]:
                     if res == "Win": p = round(stake * (dec_odds - 1), 2)
                     elif res == "Loss": p = -stake
                     new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": input_odds, "Edge": edge_pct/100, "Stake": stake, "Result": res, "Profit": p}
-                    df_master = load_data(username)
-                    df_master = pd.concat([df_master, pd.DataFrame([new_row])], ignore_index=True)
-                    save_data(df_master, username)
+                    df_all = load_data(username)
+                    df_all = pd.concat([df_all, pd.DataFrame([new_row])], ignore_index=True)
+                    save_data(df_all, username)
                     if p != 0: update_bankroll(p, username)
                     st.session_state.autofill_event = ""; st.session_state.autofill_book = ""
                     st.toast("Logged!", icon="✅"); st.rerun()
+
+        with st.expander("⚙️ Manage Dropdowns"):
+            mc1, mc2 = st.columns(2)
+            with mc1:
+                nb = st.text_input("New Book")
+                if st.button("➕ Add Book") and nb:
+                    dropdowns["books"].append(nb); save_dropdowns(dropdowns); st.rerun()
+            with mc2:
+                ns = st.text_input("New State")
+                if st.button("➕ Add State") and ns:
+                    dropdowns["states"].append(ns); save_dropdowns(dropdowns); st.rerun()
 
     elif active_page == "📊 Dashboard":
         if not df_current.empty:
@@ -283,10 +297,29 @@ if st.session_state["authentication_status"]:
                     save_data(df_current, username); update_bankroll(-row['Stake'], username); st.rerun()
                 if col4.button("🗑️", key=f"d{i}"):
                     df_current = df_current.drop(i); save_data(df_current, username); st.rerun()
+        
         st.divider()
         st.subheader("📜 History")
         settled = df_current[df_current['Result'] != 'Pending'].sort_values('Date', ascending=False)
         st.dataframe(settled, width='stretch', hide_index=True)
+        
+        # --- RE-ADDED: DELETE SETTLED BETS FEATURE ---
+        with st.expander("🗑️ Delete/Refund a Settled Bet"):
+            if not settled.empty:
+                settled_list = {f"{r['Date']} | {r['Event']} (${r['Profit']})": idx for idx, r in settled.iterrows()}
+                target = st.selectbox("Select settled bet to remove:", [""] + list(settled_list.keys()))
+                if st.button("Delete & Reverse Bankroll") and target:
+                    idx_to_del = settled_list[target]
+                    # Reverse the profit/loss impact on bankroll
+                    profit_to_reverse = df_current.at[idx_to_del, 'Profit']
+                    update_bankroll(-profit_to_reverse, username)
+                    # Remove the row and save
+                    df_final = df_current.drop(idx_to_del)
+                    save_data(df_final, username)
+                    st.toast("Settled bet removed and bankroll adjusted!")
+                    st.rerun()
+            else:
+                st.write("No settled bets found.")
 
 elif st.session_state["authentication_status"] is False:
     st.error("Incorrect credentials")
