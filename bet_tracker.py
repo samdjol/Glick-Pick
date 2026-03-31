@@ -24,7 +24,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Advanced Filtering Edition) ---
+# --- 3. SUPABASE API (Book-First Mapping) ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -40,70 +40,66 @@ def get_glicks_picks():
 
         picks = []
         book_map = {
+            "caesars": "Caesars", "caesar": "Caesars", "caeser": "Caesars",
             "rivers": "BetRivers", "espn": "ESPN Bet", "fanduel": "FanDuel",
-            "mgm": "BetMGM", "caesar": "Caesars", "caeser": "Caesars",
-            "draftkings": "DraftKings", "dk": "DraftKings", "fd": "FanDuel",
-            "pinnacle": "Pinnacle", "bovada": "Bovada", "365": "Bet365"
+            "mgm": "BetMGM", "draftkings": "DraftKings", "dk": "DraftKings", 
+            "fd": "FanDuel", "pinnacle": "Pinnacle", "bovada": "Bovada", "bet365": "Bet365"
         }
         
-        # Columns that are definitely NOT odds
-        forbidden_keys = ["id", "stars", "season", "date", "created_at", "player_id", "updated_at", "rank"]
-
         for item in data:
-            # 1. Player/Event Name
+            # 1. Basic Info
             player = item.get("player_name") or item.get("player") or "Unknown"
             line = str(item.get("line", ""))
             market = item.get("market") or item.get("prop") or ""
             
-            # 2. OVER/UNDER Call
+            # 2. OVER/UNDER (Search values only)
             call = ""
             for v in item.values():
                 if str(v).upper() in ["OVER", "UNDER"]:
                     call = str(v).upper()
                     break
 
-            # 3. BEST ODDS CALCULATION
+            # 3. BEST ODDS (Book-First Search)
             candidates = []
             for k, v in item.items():
                 k_lower = k.lower()
-                # Skip IDs and meta-data
-                if any(fk in k_lower for fk in forbidden_keys): continue
-                
-                # Check for book context in the column name
-                current_book = None
+                # Find if this key belongs to a specific book
+                matched_book = None
                 for trigger, display in book_map.items():
                     if trigger in k_lower:
-                        current_book = display
+                        matched_book = display
                         break
                 
-                try:
-                    num_v = int(v)
-                    # American odds range (-1500 to +1500)
-                    if 100 <= abs(num_v) <= 1500:
-                        candidates.append({
-                            "price": num_v, 
-                            "book": current_book if current_book else "DraftKings"
-                        })
-                except: continue
+                if matched_book:
+                    try:
+                        num_v = int(v)
+                        # Filter out things like 'stars' or 'id' even if book name matches
+                        if "id" in k_lower or "star" in k_lower or "rank" in k_lower:
+                            continue
+                        if 100 <= abs(num_v) <= 1500:
+                            candidates.append({"price": num_v, "book": matched_book})
+                    except: continue
 
+            # Compare and pick best
             if candidates:
-                # Find the pick with the highest payout
                 def payout_val(p): return p['price'] if p['price'] > 0 else (10000 / abs(p['price']))
                 best = max(candidates, key=payout_val)
                 price_str = f"+{best['price']}" if best['price'] > 0 else str(best['price'])
                 book_name = best['book']
             else:
+                # Fallback to standard search if no book-specific keys found
                 price_str, book_name = "-110", "DraftKings"
             
             picks.append({
                 "Event": f"{player}: {call} {line} {market}",
                 "Price": price_str,
-                "Book": book_name
+                "Book": book_name,
+                "Raw": item # For debugging
             })
         return picks
     except: return []
 
-# --- 4. HELPERS & AUTH ---
+# --- 4. HELPERS ---
 def get_ws_smart(sheet, name):
     all_ws = {ws.title.lower().strip(): ws for ws in sheet.worksheets()}
     target = name.lower().strip()
@@ -255,11 +251,14 @@ if st.session_state["authentication_status"]:
                         except: pass
                         st.session_state['redirect_to'] = "📝 Log New Bet"
                         st.rerun()
+            
+            with st.expander("🛠️ Developer Debug (Click if data is wrong)"):
+                st.write("Raw data from first pick:")
+                if picks: st.json(picks[0]['Raw'])
 
     elif active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
-        
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
             dropdowns["books"].append(def_bk); save_dropdowns(dropdowns)
@@ -321,7 +320,6 @@ if st.session_state["authentication_status"]:
                     save_data(df_current, username); update_bankroll(-row['Stake'], username); st.rerun()
                 if col4.button("🗑️", key=f"d{i}"):
                     df_current = df_current.drop(i); save_data(df_current, username); st.rerun()
-        
         st.divider()
         st.subheader("📜 History")
         settled = df_current[df_current['Result'] != 'Pending'].sort_values('Date', ascending=False)
