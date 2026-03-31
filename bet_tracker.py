@@ -24,7 +24,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Direct Key Mapping) ---
+# --- 3. SUPABASE API (Direct Key Extraction) ---
 @st.cache_data(ttl=300)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -39,39 +39,32 @@ def get_glicks_picks():
         if not isinstance(data, list): return []
 
         picks = []
-        # UPDATED: Added even more variations for Caesars and others
-        book_map = {
-            "betrivers": "BetRivers", "rivers": "BetRivers",
-            "espnbet": "ESPN Bet", "espn": "ESPN Bet",
-            "fanduel": "FanDuel", "fd": "FanDuel",
-            "betmgm": "BetMGM", "mgm": "BetMGM",
-            "caesars": "Caesars", "caesar": "Caesars", "caeser": "Caesars", "caesers": "Caesars", 
-            "czr": "Caesars", "williamhill": "Caesars",
-            "draftkings": "DraftKings", "dk": "DraftKings",
-            "pinnacle": "Pinnacle", "bovada": "Bovada", "bet365": "Bet365"
-        }
-        
         for item in data:
-            player = item.get("player", "Unknown")
-            call = str(item.get("direction", "")).upper()
-            line = str(item.get("line", ""))
-            market = item.get("market", "")
-            raw_price = item.get("best_price", -110)
-            raw_book = str(item.get("best_book", "draftkings")).lower()
+            # PULLING DIRECTLY FROM JSON AS REQUESTED
+            # We check for the capitalized keys you showed, with raw fallbacks just in case
+            event_display = item.get("Event") or item.get("event")
+            price_display = item.get("Price") or item.get("price")
+            book_display = item.get("Book") or item.get("book")
             
-            price_str = f"+{raw_price}" if raw_price > 0 else str(raw_price)
-            book_name = "DraftKings"
-            for slug, display in book_map.items():
-                if slug in raw_book:
-                    book_name = display
-                    break
+            # If the API returns the raw table format, we reconstruct from 'Raw' or top-level keys
+            if not event_display:
+                p_name = item.get("player") or "Unknown"
+                p_dir = str(item.get("direction", "")).upper()
+                p_line = str(item.get("line", ""))
+                p_mkt = item.get("market", "")
+                event_display = f"{p_name}: {p_dir} {p_line} {p_mkt}"
             
-            # Storing the raw item so we can inspect it in the Debug mode
+            if not price_display:
+                raw_p = item.get("best_price", -110)
+                price_display = f"+{raw_p}" if raw_p > 0 else str(raw_p)
+                
+            if not book_display:
+                book_display = item.get("best_book", "DraftKings")
+
             picks.append({
-                "Event": f"{player}: {call} {line} {market}", 
-                "Price": price_str, 
-                "Book": book_name,
-                "Raw": item 
+                "Event": event_display,
+                "Price": str(price_display),
+                "Book": str(book_display)
             })
         return picks
     except: return []
@@ -231,16 +224,17 @@ if st.session_state["authentication_status"]:
                     ca.write(f"**{p['Event']}**")
                     ca.caption(f"Best Odds: {p['Price']} at {p['Book']}")
                     if cb.button("Track", key=f"api_{p['Event']}", width='stretch'):
-                        try: clean_odds = int(str(p['Price']).replace('+', ''))
-                        except: clean_odds = -110
-                        st.session_state.pending_track = {"event": p['Event'], "book": p['Book'], "odds": clean_odds}
+                        try:
+                            # Strip '+' and convert to int for the Sidebar
+                            clean_odds = int(str(p['Price']).replace('+', ''))
+                        except:
+                            clean_odds = -110
+                        st.session_state.pending_track = {
+                            "event": p['Event'], 
+                            "book": p['Book'], 
+                            "odds": clean_odds
+                        }
                         st.rerun()
-            
-            # --- DEBUG MODE ADDED HERE ---
-            st.divider()
-            with st.expander("🛠️ API Debug (Inspect Raw Data)"):
-                st.write("This shows the raw data coming from the database. Look at the `best_book` key for the Caesars pick.")
-                st.json(picks)
 
     elif active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
@@ -313,6 +307,7 @@ if st.session_state["authentication_status"]:
         settled = df_current[df_current['Result'] != 'Pending'].sort_values('Date', ascending=False)
         st.dataframe(settled, width='stretch', hide_index=True)
         
+        # Restoration: Delete Settled Bet feature
         with st.expander("🗑️ Delete/Refund a Settled Bet"):
             if not settled.empty:
                 settled_list = {f"{r['Date']} | {r['Event']} (${r['Profit']})": idx for idx, r in settled.iterrows()}
