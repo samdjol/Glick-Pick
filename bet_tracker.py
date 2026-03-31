@@ -24,7 +24,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. SUPABASE API (Aggressive Over/Under Search) ---
+# --- 3. SUPABASE API (Broad Search for Call) ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
     today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
@@ -45,17 +45,10 @@ def get_glicks_picks():
         picks = []
         for item in data:
             player = item.get("player_name") or item.get("player") or "Unknown"
+            # Explicitly check common database keys for OVER/UNDER
+            call = str(item.get("direction") or item.get("call") or item.get("side") or "").upper()
             line = str(item.get("line", ""))
-            market = item.get("market", "") or item.get("prop", "")
-            
-            # --- OVER/UNDER SEARCH LOGIC ---
-            # We look through every value in the dictionary for "OVER" or "UNDER"
-            call = ""
-            for val in item.values():
-                val_str = str(val).upper()
-                if val_str in ["OVER", "UNDER"]:
-                    call = val_str
-                    break
+            market = item.get("market") or item.get("prop") or ""
             
             picks.append({"Event": f"{player}: {call} {line} {market}"})
         return picks
@@ -131,7 +124,7 @@ if not st.session_state.get("authentication_status"):
 if st.session_state["authentication_status"]:
     login_placeholder.empty()
     if 'dashboard_entered' not in st.session_state:
-        st.success(f"Logged in as {st.session_state['name']}")
+        st.success(f"Logged in!")
         if st.button("🚀 Enter Dashboard", width='stretch'):
             st.session_state['dashboard_entered'] = True
             st.rerun()
@@ -147,15 +140,7 @@ if st.session_state["authentication_status"]:
     st.sidebar.title(f"Welcome, {name}")
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
 
-    with st.sidebar.expander("⚙️ Adjust Balance"):
-        adj_action = st.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
-        if adj_action == "Add/Remove":
-            adj = st.number_input("Amount ($)", value=0.0, step=10.0)
-            if st.button("Update Balance"):
-                update_bankroll(adj, username); st.rerun()
-
-    st.sidebar.divider()
-    st.sidebar.header("🧮 Kelly Calculator")
+    # Kelly Defaults
     if 'odds_input' not in st.session_state: st.session_state.odds_input = -110
     if 'edge_input' not in st.session_state: st.session_state.edge_input = 15.0
 
@@ -169,21 +154,22 @@ if st.session_state["authentication_status"]:
     suggested_stake = round(full_k * k_opts[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. NAV-BAR (Fixed for Auto-Switching) ---
+    # --- 6. NAVIGATION CONTROLLER (FIXES THE CRASH) ---
     nav_labels = ["🎯 Glick's Picks", "📝 Log New Bet", "📊 Dashboard", "🗄️ History"]
     
-    # Pre-set the session state for the widget if it's missing
+    # Check if a redirect was requested by a button
+    if st.session_state.get('redirect_to'):
+        st.session_state['nav_bar'] = st.session_state['redirect_to']
+        del st.session_state['redirect_to'] # Clear it so it doesn't loop
+    
+    # Initialize widget key if missing
     if 'nav_bar' not in st.session_state:
         st.session_state['nav_bar'] = nav_labels[0]
 
+    # Render the nav bar AFTER the check above
     active_page = st.segmented_control(
-        "Navigation", 
-        nav_labels, 
-        selection_mode="single", 
-        key="nav_bar", # This key handles the state
-        label_visibility="collapsed"
+        "Navigation", nav_labels, selection_mode="single", key="nav_bar", label_visibility="collapsed"
     )
-
     st.divider()
 
     # --- 7. TAB CONTENT ---
@@ -198,20 +184,17 @@ if st.session_state["authentication_status"]:
                 with st.container(border=True):
                     cola, colb = st.columns([4, 1])
                     cola.write(f"**{p['Event']}**")
-                    cola.caption("Using Odds & Edge from your Sidebar settings.")
+                    cola.caption("Using Odds & Edge from Sidebar settings.")
                     if colb.button("Track", key=f"api_{p['Event']}", width='stretch'):
-                        # 1. Autofill the event
                         st.session_state.autofill_event = p['Event']
-                        # 2. Update the WIDGET key specifically to switch tabs
-                        st.session_state["nav_bar"] = "📝 Log New Bet"
+                        # Set redirect flag and rerun - the controller above will handle it
+                        st.session_state['redirect_to'] = "📝 Log New Bet"
                         st.rerun()
 
     elif active_page == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
-        # Fallback value for the form
         default_event = st.session_state.get('autofill_event', "")
-        
         with st.form("bet_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             date = c1.date_input("Date", datetime.datetime.now(NYC_TZ).date())
@@ -221,7 +204,6 @@ if st.session_state["authentication_status"]:
             event = c4.text_input("Event / Matchup", value=default_event)
             final_stake = c5.number_input("Actual Stake ($)", value=float(suggested_stake))
             result = c6.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
-            
             if st.form_submit_button("Save Bet to Database"):
                 if event.strip():
                     p = 0
