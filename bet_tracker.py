@@ -49,24 +49,35 @@ def clean_book_name(raw_book):
 
 def get_matchup_string(item):
     """
-    Constructs the matchup label based on home/away/opponent data.
-    Goal: [Team vs/at Opponent]
+    Constructs: 'PlayerTeam vs/at Opponent'
+    Logic: Determines if player is home/away by comparing team fields to the opponent.
     """
     opp = item.get("opponent", "Unknown")
     home = item.get("home_team", "")
     away = item.get("away_team", "")
     
-    # Priority 1: Home Team is filled -> Player is on Home Team (vs)
-    if home and home.strip():
-        return f"{home} vs {opp}"
-    
-    # Priority 2: Away Team is filled -> Player is on Away Team (at)
-    if away and away.strip():
+    # Standardize for comparison
+    opp_l = opp.lower().strip()
+    home_l = home.lower().strip() if home else ""
+    away_l = away.lower().strip() if away else ""
+
+    # Priority 1: If away_team is filled and is NOT the opponent, player is AWAY
+    if away and away_l != opp_l:
         return f"{away} at {opp}"
     
-    # Priority 3: Fallback if home/away are missing but we have opponent
-    # (Tries to prevent just showing '[CIN]')
-    return f"??? vs {opp}" if opp != "Unknown" else "Matchup TBD"
+    # Priority 2: If home_team is filled and is NOT the opponent, player is HOME
+    if home and home_l != opp_l:
+        return f"{home} vs {opp}"
+    
+    # Fallback: If home_team matches the opponent, the player must be the away team
+    if home_l == opp_l and away:
+        return f"{away} at {opp}"
+        
+    # Final fallback to prevent [CIN vs CIN]
+    if home and not away and home_l == opp_l:
+        return f"Away Team at {opp}"
+        
+    return f"{home if home else '???'} vs {opp}"
 
 @st.cache_data(ttl=300)
 def get_glicks_picks():
@@ -82,33 +93,25 @@ def get_glicks_picks():
 
         picks = []
         for item in data:
-            # Build Matchup Component
+            # Matchup Logic
             matchup = get_matchup_string(item)
-            
-            # Identify components for the pick description
-            p_name = item.get("player") or "Unknown Player"
+            p_name = item.get("player") or "Unknown"
             p_dir = str(item.get("direction", "")).upper()
             p_line = str(item.get("line", ""))
             p_mkt = item.get("market", "")
             
-            # Construct Event: [Team vs Opponent] Player: DIR LINE MARKET
+            # Event string
             event = f"[{matchup}] {p_name}: {p_dir} {p_line} {p_mkt}"
             
-            # Price Processing (Handles both +112 and 112 formats)
-            raw_p = item.get("best_price") or item.get("Price", -110)
-            if isinstance(raw_p, str):
-                price = raw_p if raw_p.startswith(('-', '+')) else f"+{raw_p}"
-            else:
-                price = f"+{raw_p}" if raw_p > 0 else str(raw_p)
-            
-            # Book Standardization
-            book_key = item.get("best_book") or item.get("Book", "DraftKings")
-            book = clean_book_name(book_key)
+            # Price & Book
+            raw_p = item.get("best_price", -110)
+            price = f"+{raw_p}" if raw_p > 0 else str(raw_p)
+            book = clean_book_name(item.get("best_book", "DraftKings"))
             
             # Time & Sorting
             display_time = item.get("game_time") or "TBD"
             sort_key = "23:59"
-            if display_time and display_time != "TBD":
+            if display_time != "TBD":
                 try:
                     t_str = display_time.replace(" ET", "").strip()
                     t_obj = datetime.datetime.strptime(t_str, "%I:%M %p")
@@ -123,12 +126,9 @@ def get_glicks_picks():
                 "SortKey": sort_key
             })
         
-        # Sort chronologically by the internal SortKey
         picks.sort(key=lambda x: x['SortKey'])
         return picks
-    except Exception as e:
-        # Silently fail for UI, or log error if needed
-        return []
+    except: return []
 
 # --- 4. DATA HELPERS ---
 def get_ws_smart(sheet, name):
@@ -259,7 +259,7 @@ if st.session_state["authentication_status"]:
     input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input")
     edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, step=0.1, key="edge_input")
     
-    # Toggle for rounding to whole number
+    # Rounding toggle
     round_toggle = st.sidebar.toggle("Round to Whole Number", value=True)
     
     k_map = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
@@ -269,7 +269,6 @@ if st.session_state["authentication_status"]:
     full_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
     raw_suggested = full_k * k_map[k_sel] * st.session_state.bankroll
     
-    # Apply rounding logic
     suggested_stake = round(raw_suggested) if round_toggle else round(raw_suggested, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
