@@ -39,7 +39,6 @@ def get_glicks_picks():
         if not isinstance(data, list): return []
 
         picks = []
-        # Mapping raw database slugs to clean display names
         book_map = {
             "betrivers": "BetRivers", "rivers": "BetRivers",
             "espnbet": "ESPN Bet", "espn": "ESPN Bet",
@@ -51,21 +50,18 @@ def get_glicks_picks():
         }
         
         for item in data:
-            # 1. Map Keys Exactly from your JSON sample
             player = item.get("player", "Unknown")
             call = str(item.get("direction", "")).upper()
             line = str(item.get("line", ""))
             market = item.get("market", "")
             
-            # 2. Grab Best Price & Best Book directly
+            # Target the surgical keys from your JSON
             raw_price = item.get("best_price", -110)
             raw_book = str(item.get("best_book", "draftkings")).lower()
             
-            # Format price string (+113, -150, etc.)
             price_str = f"+{raw_price}" if raw_price > 0 else str(raw_price)
             
-            # Clean up the book name using our map
-            book_name = "DraftKings" # Default
+            book_name = "DraftKings"
             for slug, display in book_map.items():
                 if slug in raw_book:
                     book_name = display
@@ -173,7 +169,7 @@ if st.session_state["authentication_status"]:
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     df_current = load_data(username)
 
-    # --- SIDEBAR ---
+    # --- SIDEBAR: THE SOURCE OF TRUTH ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.title(f"Welcome, {name}")
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
@@ -189,20 +185,24 @@ if st.session_state["authentication_status"]:
 
     st.sidebar.divider()
     st.sidebar.header("🧮 Kelly Calculator")
+    
+    # Init Sidebar state
     if 'odds_input' not in st.session_state: st.session_state.odds_input = -110
     if 'edge_input' not in st.session_state: st.session_state.edge_input = 15.0
     
-    odds_in = st.sidebar.number_input("American Odds", step=1, key="odds_input")
-    edge_in = st.sidebar.number_input("Edge (%)", 0.0, 100.0, step=0.1, key="edge_input")
+    # Sidebar widgets tied to session state
+    input_odds = st.sidebar.number_input("American Odds", step=1, key="odds_input")
+    edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, step=0.1, key="edge_input")
+    
     k_sel = st.sidebar.radio("Multiplier", ["Full", "Half", "Quarter"], index=2, horizontal=True)
     k_map = {"Full": 1.0, "Half": 0.5, "Quarter": 0.25}
     
-    dec_odds = american_to_decimal(odds_in)
-    full_k = (edge_in/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
+    dec_odds = american_to_decimal(input_odds)
+    full_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
     suggested_stake = round(full_k * k_map[k_sel] * st.session_state.bankroll, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # --- 6. NAV CONTROLLER (AUTO-SWITCH) ---
+    # --- 6. NAV CONTROLLER ---
     nav_labels = ["🎯 Glick's Picks", "📝 Log New Bet", "📊 Dashboard", "🗄️ History"]
     if st.session_state.get('redirect_to'):
         st.session_state['nav_bar_key'] = st.session_state['redirect_to']
@@ -224,12 +224,17 @@ if st.session_state["authentication_status"]:
                     ca.write(f"**{p['Event']}**")
                     ca.caption(f"Best Odds: {p['Price']} at {p['Book']}")
                     if cb.button("Track", key=f"api_{p['Event']}", width='stretch'):
+                        # 1. Store Autofill Data
                         st.session_state.autofill_event = p['Event']
                         st.session_state.autofill_book = p['Book']
+                        
+                        # 2. OVERWRITE SIDEBAR ODDS (This is the sync you wanted)
                         try:
-                            # Update the Sidebar Odds instantly with the BEST price
+                            # Strip '+' if it exists before converting to int
                             st.session_state.odds_input = int(str(p['Price']).replace('+', ''))
                         except: pass
+                        
+                        # 3. Switch Tabs
                         st.session_state['redirect_to'] = "📝 Log New Bet"
                         st.rerun()
 
@@ -237,7 +242,6 @@ if st.session_state["authentication_status"]:
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
         
-        # Auto-select tracked book
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
             dropdowns["books"].append(def_bk); save_dropdowns(dropdowns)
@@ -246,10 +250,13 @@ if st.session_state["authentication_status"]:
         with st.form("bet_form", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             date = c1.date_input("Date", datetime.datetime.now(NYC_TZ).date())
+            # Book pre-selected from Track
             book = c2.selectbox("Sportsbook", dropdowns["books"], index=book_idx)
             state = c3.selectbox("State", dropdowns["states"])
             c4, c5, c6 = st.columns(3)
+            # Event pre-filled from Track
             event = c4.text_input("Event / Matchup", value=st.session_state.get('autofill_event', ""))
+            # Stake calculated using the NEW odds in the sidebar
             stake = c5.number_input("Actual Stake ($)", value=float(suggested_stake))
             res = c6.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
             if st.form_submit_button("Save Bet"):
@@ -257,7 +264,8 @@ if st.session_state["authentication_status"]:
                     p = 0
                     if res == "Win": p = round(stake * (dec_odds - 1), 2)
                     elif res == "Loss": p = -stake
-                    new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": odds_in, "Edge": edge_in/100, "Stake": stake, "Result": res, "Profit": p}
+                    # Use current sidebar odds (input_odds) for the record
+                    new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": input_odds, "Edge": edge_pct/100, "Stake": stake, "Result": res, "Profit": p}
                     df_master = load_data(username)
                     df_master = pd.concat([df_master, pd.DataFrame([new_row])], ignore_index=True)
                     save_data(df_master, username)
@@ -306,7 +314,7 @@ if st.session_state["authentication_status"]:
         
         with st.expander("🗑️ Delete/Refund a Settled Bet"):
             settled_list = {f"{r['Date']} | {r['Event']} (${r['Profit']})": idx for idx, r in settled.iterrows()}
-            target = st.selectbox("Select bet:", [""] + list(settled_list.keys()))
+            target = st.selectbox("Select bet to remove:", [""] + list(settled_list.keys()))
             if st.button("Delete & Reverse Bankroll") and target:
                 idx_to_del = settled_list[target]
                 update_bankroll(-df_current.at[idx_to_del, 'Profit'], username)
