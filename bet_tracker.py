@@ -28,48 +28,46 @@ sheet = init_gsheets()
 # --- 3. SCRAPER & HELPERS ---
 @st.cache_data(ttl=3600)
 def get_glicks_picks():
-    url = "https://glicks-picks.com/picks.html"
+    # 1. Get the current date in NYC format (YYYY-MM-DD)
+    today_str = datetime.datetime.now(NYC_TZ).strftime("%Y-%m-%d")
+    
+    # 2. Use the Supabase API URL with the dynamic date
+    # I've removed the hardcoded date from your link and replaced it with today_str
+    url = f"https://ajjruzolkbzardssopos.supabase.co/rest/v1/picks?select=*&season=eq.2026&date=eq.{today_str}&order=stars.desc"
+    
+    # Supabase usually requires an API key in the headers. 
+    # If the link worked in your browser without one, it's public. 
+    # If it fails, we may need to grab the 'apikey' from your browser's Network tab.
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0",
+        "Content-Type": "application/json"
     }
+
     try:
         response = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        data = response.json() # This API returns a list of dictionaries
         
-        # Look for the grid container first
-        grid = soup.find('div', class_='picks-grid')
-        if not grid:
-            return [] # This confirms the page is empty when BeautifulSoup sees it
-
-        cards = grid.find_all('div', class_='pick-card')
         picks = []
-
-        for card in cards:
-            try:
-                # 1. Player Name
-                player = card.find('div', class_='pick-card-player').get_text(strip=True)
-                
-                # 2. The Call (Direction + Line + Market)
-                # target 'pick-direction', 'pick-line', and 'pick-card-market'
-                direction = card.find('span', class_=lambda x: x and 'pick-direction' in x).get_text(strip=True)
-                line = card.find('span', class_='pick-line').get_text(strip=True)
-                market = card.find('span', class_='pick-card-market').get_text(strip=True)
-                
-                # 3. Sportsbook & Price (from pick-card-book)
-                book_div = card.find('div', class_='pick-card-book')
-                # The sportsbook is naked text inside the div, after the span
-                book_name = book_div.find(text=True, recursive=False).strip()
-                price = book_div.find('span', class_='pick-card-price').get_text(strip=True)
-                
-                picks.append({
-                    "Event": f"{player}: {direction} {line} {market} ({book_name})",
-                    "Odds": price,
-                    "Edge": "15.0"
-                })
-            except Exception:
-                continue
+        for item in data:
+            # We map the API keys to your app's format
+            # Based on common Supabase structures, I'm guessing the names:
+            player = item.get("player_name", "Unknown Player")
+            call = item.get("call", "").upper() # e.g., OVER
+            line = item.get("line", "")
+            market = item.get("market", "")
+            price = item.get("price", "-110")
+            
+            # Combine into your Event format
+            event_name = f"{player}: {call} {line} {market}"
+            
+            picks.append({
+                "Event": event_name,
+                "Odds": str(price),
+                "Edge": str(item.get("edge", "15.0")) # Pull edge if it exists
+            })
         return picks
-    except:
+    except Exception as e:
+        st.error(f"API Error: {e}")
         return []
 
 # Initialize "Auto-fill" state
