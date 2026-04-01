@@ -44,12 +44,13 @@ def get_live_mlb_stats(game_pk, player_name, market):
                         f_i = int(float(ip))
                         part = round((float(ip) - f_i) * 10)
                         val = (f_i * 3) + part
-                        return {"val": val, "status": data.get('gameData', {}).get('status', {}).get('abstractGameState')}
+                        # Using a safer path for game status if available
+                        return {"val": val, "status": data.get('status', {}).get('abstractGameState')}
                     elif "Bases" in str(market):
                         b = stats.get('batting', {})
                         h, d, t, hr = b.get('hits', 0), b.get('doubles', 0), b.get('triples', 0), b.get('homeRuns', 0)
                         val = (h - d - t - hr) + (d * 2) + (t * 3) + (hr * 4)
-                        return {"val": val, "status": data.get('gameData', {}).get('status', {}).get('abstractGameState')}
+                        return {"val": val, "status": data.get('status', {}).get('abstractGameState')}
     except: return None
     return None
 
@@ -74,8 +75,19 @@ def get_glicks_picks():
     headers = {"apikey": "sb_publishable_aAFvyqUjJFYQsuG8GY2KTA_U4SLd545", "Authorization": "Bearer sb_publishable_aAFvyqUjJFYQsuG8GY2KTA_U4SLd545"}
     try:
         data = requests.get(url, headers=headers).json()
-        # SORTING LOGIC: Sort by game_time (handles strings like '19:05' or '2026-03-31T19:05')
-        data = sorted(data, key=lambda x: x.get('game_time', '99:99') if x.get('game_time') else '99:99')
+        
+        # --- FIXED SORTING: Convert "10:10 PM ET" strings to sortable time objects ---
+        def parse_time(t_str):
+            if not t_str: return pd.Timestamp.max
+            try:
+                # Clean " ET" and parse as datetime for chronological sorting
+                clean_t = str(t_str).replace(' ET', '').strip()
+                return pd.to_datetime(clean_t)
+            except:
+                return pd.Timestamp.max
+
+        data = sorted(data, key=lambda x: parse_time(x.get('game_time')))
+        
         picks = []
         for item in data:
             matchup = get_matchup_string(item)
@@ -291,7 +303,7 @@ if st.session_state["authentication_status"]:
                         save_data(df_current.drop(i), username); st.rerun()
         st.divider()
         st.subheader("📜 Settled History")
-        # Limited view: only show columns up to Profit
+        # Limited view: only show core columns
         display_cols = ['Date', 'Book', 'State', 'Event', 'Odds', 'Edge', 'Stake', 'Result', 'Profit']
         settled = df_current[df_current['Result'] != 'Pending'].sort_values('Date', ascending=False)
         st.dataframe(settled[display_cols], width='stretch', hide_index=True)
