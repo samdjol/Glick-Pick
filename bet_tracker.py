@@ -9,6 +9,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import streamlit_authenticator as stauth
 import requests
+import unicodedata
 
 # --- 1. PAGE CONFIG & TIMEZONE ---
 st.set_page_config(page_title="Glick Pick Tracker - TEST ENV", layout="wide")
@@ -25,27 +26,31 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. LIVE MLB DATA ENGINE (Updated to Feed/Live for Status) ---
-@st.cache_data(ttl=300) # 5-minute rate limit cache
+# --- 3. LIVE MLB DATA ENGINE (Robust Accents & Fuzzy Match) ---
+def simplify_name(name):
+    """Removes accents and special characters for better matching."""
+    return "".join(c for c in unicodedata.normalize('NFD', name) if unicodedata.category(c) != 'Mn').lower().strip()
+
+@st.cache_data(ttl=300)
 def get_live_mlb_stats(game_pk, player_name, market):
-    """Fetches live stats and game status from the master feed."""
     if not game_pk or game_pk == "": return None
-    # Switched to /feed/live to fix the (None) status issue
     url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/feed/live"
     try:
         response = requests.get(url, timeout=5)
         data = response.json()
         
-        # Get abstract status (In Progress, Final, etc)
         game_status = data.get('gameData', {}).get('status', {}).get('abstractGameState', 'Unknown')
-        
-        # Access player boxscore within the live feed
         box_teams = data.get('liveData', {}).get('boxscore', {}).get('teams', {})
+        
+        target_name = simplify_name(player_name)
         
         for team in ['home', 'away']:
             players = box_teams.get(team, {}).get('players', {})
             for p_id, p_info in players.items():
-                if player_name.lower() in p_info['person']['fullName'].lower():
+                mlb_name = simplify_name(p_info['person']['fullName'])
+                
+                # Check if our target name is inside the MLB name or vice versa
+                if target_name in mlb_name or mlb_name in target_name:
                     stats = p_info['stats']
                     
                     if "Outs" in str(market):
@@ -212,7 +217,6 @@ if st.session_state["authentication_status"]:
     suggested_stake = round(raw_suggested) if round_toggle else round(raw_suggested, 2)
     st.sidebar.metric("Suggested Stake", f"\${suggested_stake:,.2f}")
 
-    # Track logic redirection
     if st.session_state.get('pending_track'):
         track = st.session_state.pending_track
         st.session_state.autofill_event = track['event']
@@ -315,10 +319,10 @@ if st.session_state["authentication_status"]:
                     col1.write(f"**{row['Event']}** | {row['Book']} ({row['Odds']})")
                     col1.write(f"💰 Wager: **\${row['Stake']:.2f}** | 📈 Potential Profit: **\${pot_profit:.2f}**")
                     
-                    # --- AUTO LIVE TRACKING (Updated Status Path) ---
                     if row.get('game_pk'):
                         stats = get_live_mlb_stats(row['game_pk'], row['player_name'], row['market'])
                         if stats:
+                            # Status and Visual Logic
                             is_win = (row['dir'] == 'OVER' and float(stats['val']) > float(row['line'])) or (row['dir'] == 'UNDER' and float(stats['val']) < float(row['line']))
                             icon = "✅" if is_win else "❌"
                             st.caption(f"⚾ **Live: {stats['val']} {row['market']}** ({stats['status']}) {icon}")
