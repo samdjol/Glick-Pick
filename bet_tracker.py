@@ -25,10 +25,9 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. LIVE MLB DATA ENGINE (With Rate Limiting) ---
+# --- 3. LIVE MLB DATA ENGINE ---
 @st.cache_data(ttl=300) 
 def get_live_mlb_stats(game_pk, player_name, market):
-    """Automatically fetches live boxscore and calculates relevant stats."""
     if not game_pk or game_pk == "": return None
     url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
     try:
@@ -39,7 +38,6 @@ def get_live_mlb_stats(game_pk, player_name, market):
             for p_id, p_info in players.items():
                 if player_name.lower() in p_info['person']['fullName'].lower():
                     stats = p_info['stats']
-                    # Outs Recorded calculation
                     if "Outs" in str(market):
                         pitching = stats.get('pitching', {})
                         ip = pitching.get('inningsPitched', "0.0")
@@ -47,7 +45,6 @@ def get_live_mlb_stats(game_pk, player_name, market):
                         part = round((float(ip) - f_i) * 10)
                         val = (f_i * 3) + part
                         return {"val": val, "status": data.get('gameData', {}).get('status', {}).get('abstractGameState')}
-                    # Total Bases calculation
                     elif "Bases" in str(market):
                         b = stats.get('batting', {})
                         h, d, t, hr = b.get('hits', 0), b.get('doubles', 0), b.get('triples', 0), b.get('homeRuns', 0)
@@ -77,6 +74,8 @@ def get_glicks_picks():
     headers = {"apikey": "sb_publishable_aAFvyqUjJFYQsuG8GY2KTA_U4SLd545", "Authorization": "Bearer sb_publishable_aAFvyqUjJFYQsuG8GY2KTA_U4SLd545"}
     try:
         data = requests.get(url, headers=headers).json()
+        # SORTING LOGIC: Sort by game_time (handles strings like '19:05' or '2026-03-31T19:05')
+        data = sorted(data, key=lambda x: x.get('game_time', '99:99') if x.get('game_time') else '99:99')
         picks = []
         for item in data:
             matchup = get_matchup_string(item)
@@ -167,7 +166,7 @@ if st.session_state["authentication_status"]:
 
     # Sidebar
     authenticator.logout('Logout', 'sidebar')
-    st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
+    st.sidebar.metric("💰 Bankroll", f"\${st.session_state.bankroll:,.2f}")
     with st.sidebar.expander("⚙️ Adjust Balance"):
         adj_action = st.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
         if adj_action == "Add/Remove":
@@ -186,7 +185,7 @@ if st.session_state["authentication_status"]:
     dec_odds = american_to_decimal(input_odds)
     raw_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
     s_stake = round(raw_k * {"Full":1.0, "Half":0.5, "Quarter":0.25}[k_sel] * st.session_state.bankroll) if round_toggle else round(raw_k * 0.25 * st.session_state.bankroll, 2)
-    st.sidebar.metric("Suggested Stake", f"${s_stake:,.2f}")
+    st.sidebar.metric("Suggested Stake", f"\${s_stake:,.2f}")
 
     if st.session_state.get('pending_track'):
         track = st.session_state.pending_track
@@ -249,9 +248,9 @@ if st.session_state["authentication_status"]:
             daily = df_dash.groupby('Date')['Profit'].sum().reset_index().sort_values('Date')
             daily['Cumulative Profit'] = daily['Profit'].cumsum()
             m1, m2, m3 = st.columns(3)
-            m1.metric("Total P/L", f"${df_current['Profit'].sum():,.2f}")
+            m1.metric("Total P/L", f"\${df_current['Profit'].sum():,.2f}")
             m2.metric("Days Active", len(daily))
-            m3.metric("Avg Daily Profit", f"${daily['Profit'].mean():,.2f}")
+            m3.metric("Avg Daily Profit", f"\${daily['Profit'].mean():,.2f}")
             fig_line = px.line(daily, x='Date', y='Cumulative Profit', title="Profit (End of Day)", markers=True)
             fig_line.update_xaxes(type='date', tickformat='%Y-%m-%d', dtick="D1")
             st.plotly_chart(fig_line, use_container_width=True)
@@ -269,19 +268,16 @@ if st.session_state["authentication_status"]:
                 with st.container(border=True):
                     col1, col2, col3, col4 = st.columns([3, 1, 1, 0.5])
                     col1.write(f"**{row['Event']}** | {row['Book']} ({row['Odds']})")
-                    col1.write(f"💰 Wager: **${row['Stake']:.2f}** | 📈 Potential Profit: **${pot_profit:.2f}**")
+                    # Using \$ ensures dollar signs are treated as text and bolding stays intact
+                    col1.write(f"💰 Wager: **\${row['Stake']:.2f}** | 📈 Potential Profit: **\${pot_profit:.2f}**")
                     
-                    # --- AUTO LIVE TRACKING DISPLAY (Updated to remove None) ---
                     if row.get('game_pk'):
                         stats = get_live_mlb_stats(row['game_pk'], row['player_name'], row['market'])
                         if stats:
                             is_win = (row['dir'] == 'OVER' and float(stats['val']) > float(row['line'])) or (row['dir'] == 'UNDER' and float(stats['val']) < float(row['line']))
                             icon = "✅" if is_win else "❌"
-                            
-                            # Logic to hide (None) or empty statuses
                             status_val = stats.get('status')
                             status_str = f" ({status_val})" if status_val and str(status_val).lower() != "none" else ""
-                            
                             st.caption(f"⚾ **Live: {stats['val']} {row['market']}**{status_str} {icon}")
                         else: st.caption("⚾ *Waiting for game to start/update...*")
 
@@ -295,8 +291,11 @@ if st.session_state["authentication_status"]:
                         save_data(df_current.drop(i), username); st.rerun()
         st.divider()
         st.subheader("📜 Settled History")
+        # Limited view: only show columns up to Profit
+        display_cols = ['Date', 'Book', 'State', 'Event', 'Odds', 'Edge', 'Stake', 'Result', 'Profit']
         settled = df_current[df_current['Result'] != 'Pending'].sort_values('Date', ascending=False)
-        st.dataframe(settled, width='stretch', hide_index=True)
+        st.dataframe(settled[display_cols], width='stretch', hide_index=True)
+        
         with st.expander("🗑️ Delete/Refund a Settled Bet"):
             if not settled.empty:
                 s_list = {f"{r['Date']} | {r['Event']} (${r['Profit']})": idx for idx, r in settled.iterrows()}
