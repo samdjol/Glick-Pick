@@ -17,31 +17,14 @@ NYC_TZ = ZoneInfo("America/New_York")
 # --- 2. CUSTOM CSS FOR COMPACT UI ---
 st.markdown("""
     <style>
-    /* Shrink Sidebar Font and Padding */
-    [data-testid="stSidebar"] {
-        font-size: 0.85rem;
-    }
-    [data-testid="stSidebarNav"] {
-        padding-top: 1rem;
-    }
-    [data-testid="stSidebar"] .stMetric {
-        padding: 5px;
-    }
-    /* Compact Metric values */
-    [data-testid="stMetricValue"] {
-        font-size: 1.4rem !important;
-    }
-    [data-testid="stSidebar"] .stButton button {
-        padding: 0.2rem 0.5rem;
-        font-size: 0.8rem;
-    }
-    /* Reduce whitespace in main container */
-    .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 1rem;
-    }
+    [data-testid="stSidebar"] { font-size: 0.85rem; }
+    [data-testid="stSidebarNav"] { padding-top: 1rem; }
+    [data-testid="stSidebar"] .stMetric { padding: 5px; }
+    [data-testid="stMetricValue"] { font-size: 1.4rem !important; }
+    [data-testid="stSidebar"] .stButton button { padding: 0.2rem 0.5rem; font-size: 0.8rem; }
+    .block-container { padding-top: 1.5rem; padding-bottom: 1rem; }
     </style>
-    """, unsafe_allow_html=True) # FIXED: Changed from unsafe_markdown to unsafe_allow_html
+    """, unsafe_allow_html=True)
 
 # --- 3. GOOGLE SHEETS CONNECTION ---
 @st.cache_resource
@@ -197,18 +180,19 @@ if not st.session_state.get("authentication_status"):
 if st.session_state["authentication_status"]:
     username, name = st.session_state["username"], st.session_state["name"]
     
+    # Session State Initialization
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     if 'form_stake' not in st.session_state: st.session_state.form_stake = 0.0
     if 'form_odds' not in st.session_state: st.session_state.form_odds = -110
+    if 'nav_bar_key' not in st.session_state: st.session_state.nav_bar_key = "🎯 Picks"
 
     df_current = load_data(username)
 
-    # --- SIDEBAR UI (Condensed) ---
+    # --- SIDEBAR UI ---
     with st.sidebar:
         authenticator.logout('Logout', 'sidebar')
         st.metric("💰 Bankroll", f"\${st.session_state.bankroll:,.2f}")
         
-        # Expander logic: Widgets stay inside when st.sidebar prefix is removed
         with st.expander("⚙️ Adjust Balance"):
             adj_action = st.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
             if adj_action == "Add/Remove":
@@ -224,6 +208,7 @@ if st.session_state["authentication_status"]:
         round_toggle = st.toggle("Round", value=True)
         k_sel = st.radio("Mult", ["Full", "Half", "Quarter"], index=2, horizontal=True)
         
+        # Use existing form_odds to calculate stake
         dec_odds = american_to_decimal(st.session_state.form_odds)
         raw_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
         calc_stake = round(raw_k * {"Full":1.0, "Half":0.5, "Quarter":0.25}[k_sel] * st.session_state.bankroll) if round_toggle else round(raw_k * 0.25 * st.session_state.bankroll, 2)
@@ -231,7 +216,9 @@ if st.session_state["authentication_status"]:
         sc1, sc2 = st.columns([2, 1])
         sc1.metric("Suggested", f"\${calc_stake:,.2f}")
         if sc2.button("Apply"):
+            # Update state AND force navigation
             st.session_state.form_stake = float(calc_stake)
+            st.session_state.nav_bar_key = "📝 Log New Bet"
             st.rerun()
 
     # --- MAIN NAVIGATION ---
@@ -241,7 +228,7 @@ if st.session_state["authentication_status"]:
         st.session_state.autofill_book = track['book']
         st.session_state.form_odds = int(track['odds'])
         st.session_state.autofill_meta = {"game_pk": track['game_pk'], "player_name": track['player_name'], "market": track['market'], "line": track['line'], "dir": track['dir'], "odds": track['odds']}
-        st.session_state['nav_bar_key'] = "📝 Log New Bet"
+        st.session_state.nav_bar_key = "📝 Log New Bet"
         del st.session_state['pending_track']
 
     nav = st.segmented_control("Navigation", ["🎯 Picks", "📝 Log New Bet", "📊 Dashboard", "🗄️ History"], key="nav_bar_key", selection_mode="single", default="🎯 Picks")
@@ -263,6 +250,7 @@ if st.session_state["authentication_status"]:
         def_bk = st.session_state.get('autofill_book', "")
         book_idx = dropdowns["books"].index(def_bk) if def_bk in dropdowns["books"] else 0
 
+        # We use a form, but pull defaults from session_state
         with st.form("bet_form", clear_on_submit=True):
             r1c1, r1c2, r1c3 = st.columns(3)
             date = r1c1.date_input("Date", datetime.datetime.now(NYC_TZ).date())
@@ -271,9 +259,14 @@ if st.session_state["authentication_status"]:
             
             r2c1, r2c2, r2c3 = st.columns(3)
             event = r2c1.text_input("Event", value=st.session_state.get('autofill_event', ""))
-            odds_input = r2c2.number_input("American Odds", value=int(st.session_state.form_odds), step=1, key="form_odds")
-            stake_input = r2c3.number_input("Stake ($)", value=float(st.session_state.form_stake), step=1.0, key="form_stake")
+            # Linking key allows 'Apply' button to push values here on rerun
+            odds_input = r2c2.number_input("American Odds", value=int(st.session_state.form_odds), step=1, key="form_odds_widget")
+            stake_input = r2c3.number_input("Stake ($)", value=float(st.session_state.form_stake), step=1.0, key="form_stake_widget")
             
+            # Sync the hidden session state used for Kelly Calc with the widget inputs
+            st.session_state.form_odds = odds_input
+            st.session_state.form_stake = stake_input
+
             r3c1 = st.columns(3)[0]
             res = r3c1.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
             
