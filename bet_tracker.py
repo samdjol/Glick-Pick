@@ -1,5 +1,4 @@
 import streamlit as st
-import pd
 import pandas as pd
 import datetime
 from zoneinfo import ZoneInfo
