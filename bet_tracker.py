@@ -11,10 +11,31 @@ import streamlit_authenticator as stauth
 import requests
 
 # --- 1. PAGE CONFIG & TIMEZONE ---
-st.set_page_config(page_title="Glick Pick Tracker - TEST ENV", layout="wide")
+st.set_page_config(page_title="Glick Pick Tracker", layout="wide")
 NYC_TZ = ZoneInfo("America/New_York")
 
-# --- 2. GOOGLE SHEETS CONNECTION ---
+# --- 2. CUSTOM CSS FOR COMPACT UI ---
+st.markdown("""
+    <style>
+    /* Shrink Sidebar Font and Padding */
+    [data-testid="stSidebar"] {
+        font-size: 0.85rem;
+    }
+    [data-testid="stSidebar"] .stMetric {
+        padding: 0px;
+    }
+    [data-testid="stSidebar"] .stButton button {
+        padding: 0.2rem 0.5rem;
+        font-size: 0.8rem;
+    }
+    /* Reduce whitespace between sidebar elements */
+    .block-container {
+        padding-top: 2rem;
+    }
+    </style>
+    """, unsafe_markdown=True)
+
+# --- 3. GOOGLE SHEETS CONNECTION ---
 @st.cache_resource
 def init_gsheets():
     creds_json = json.loads(st.secrets["GOOGLE_CREDENTIALS"])
@@ -25,7 +46,7 @@ def init_gsheets():
 
 sheet = init_gsheets()
 
-# --- 3. LIVE MLB DATA ENGINE ---
+# --- 4. LIVE MLB DATA ENGINE ---
 @st.cache_data(ttl=300) 
 def get_live_mlb_stats(game_pk, player_name, market):
     if not game_pk or game_pk == "": return None
@@ -54,7 +75,7 @@ def get_live_mlb_stats(game_pk, player_name, market):
     except: return None
     return None
 
-# --- 4. HELPERS ---
+# --- 5. HELPERS ---
 def clean_book_name(raw_book):
     if not raw_book: return "DraftKings"
     lookup = str(raw_book).lower().replace("_", "").replace(" ", "")
@@ -152,7 +173,7 @@ def get_ws_smart(sheet, name):
     if target in all_ws: return all_ws[target]
     st.error(f"Tab Not Found: '{target}'"); st.stop()
 
-# --- 5. AUTH & UI ---
+# --- 6. AUTH & UI ---
 @st.cache_data(ttl=3600)
 def load_credentials():
     ws = sheet.worksheet("Credentials")
@@ -168,42 +189,44 @@ if not st.session_state.get("authentication_status"):
 if st.session_state["authentication_status"]:
     username, name = st.session_state["username"], st.session_state["name"]
     
-    # Session State Initialization
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     if 'form_stake' not in st.session_state: st.session_state.form_stake = 0.0
     if 'form_odds' not in st.session_state: st.session_state.form_odds = -110
 
     df_current = load_data(username)
 
-    # Sidebar
-    authenticator.logout('Logout', 'sidebar')
-    st.sidebar.metric("💰 Bankroll", f"\${st.session_state.bankroll:,.2f}")
-    with st.sidebar.expander("⚙️ Adjust Balance"):
-        adj_action = st.sidebar.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
-        if adj_action == "Add/Remove":
-            adj_v = st.sidebar.number_input("Amount ($)", value=0.0)
-            if st.sidebar.button("Update Balance"): update_bankroll(adj_v, username); st.rerun()
-        else:
-            set_v = st.sidebar.number_input("Exact ($)", value=float(st.session_state.bankroll))
-            if st.sidebar.button("Set Balance"): set_bankroll(set_v, username); st.rerun()
+    # --- SIDEBAR UI ---
+    with st.sidebar:
+        authenticator.logout('Logout', 'sidebar')
+        st.metric("💰 Bankroll", f"\${st.session_state.bankroll:,.2f}")
+        
+        # FIXED: "Adjust Balance" widgets now inside expander by removing st.sidebar prefix
+        with st.expander("⚙️ Adjust Balance"):
+            adj_action = st.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
+            if adj_action == "Add/Remove":
+                adj_v = st.number_input("Amount ($)", value=0.0)
+                if st.button("Update Balance"): update_bankroll(adj_v, username); st.rerun()
+            else:
+                set_v = st.number_input("Exact ($)", value=float(st.session_state.bankroll))
+                if st.button("Set Balance"): set_bankroll(set_v, username); st.rerun()
 
-    st.sidebar.divider()
-    st.sidebar.markdown("### 🧮 Kelly Calculator")
-    edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, 15.0, step=1.0)
-    round_toggle = st.sidebar.toggle("Round to Whole Number", value=True)
-    k_sel = st.sidebar.radio("Multiplier", ["Full", "Half", "Quarter"], index=2, horizontal=True)
-    
-    # Calculator uses the Odds currently in the Session State (which matches the form)
-    dec_odds = american_to_decimal(st.session_state.form_odds)
-    raw_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
-    calc_stake = round(raw_k * {"Full":1.0, "Half":0.5, "Quarter":0.25}[k_sel] * st.session_state.bankroll) if round_toggle else round(raw_k * 0.25 * st.session_state.bankroll, 2)
-    
-    sc1, sc2 = st.sidebar.columns([2, 1])
-    sc1.metric("Suggested", f"\${calc_stake:,.2f}")
-    if sc2.button("Apply"):
-        st.session_state.form_stake = float(calc_stake)
-        st.rerun()
+        st.divider()
+        st.markdown("### 🧮 Kelly Calc")
+        edge_pct = st.number_input("Edge (%)", 0.0, 100.0, 15.0, step=1.0)
+        round_toggle = st.toggle("Round", value=True)
+        k_sel = st.radio("Mult", ["Full", "Half", "Quarter"], index=2, horizontal=True)
+        
+        dec_odds = american_to_decimal(st.session_state.form_odds)
+        raw_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
+        calc_stake = round(raw_k * {"Full":1.0, "Half":0.5, "Quarter":0.25}[k_sel] * st.session_state.bankroll) if round_toggle else round(raw_k * 0.25 * st.session_state.bankroll, 2)
+        
+        sc1, sc2 = st.columns([2, 1])
+        sc1.metric("Suggested", f"\${calc_stake:,.2f}")
+        if sc2.button("Apply"):
+            st.session_state.form_stake = float(calc_stake)
+            st.rerun()
 
+    # --- MAIN NAVIGATION ---
     if st.session_state.get('pending_track'):
         track = st.session_state.pending_track
         st.session_state.autofill_event = track['event']
@@ -229,7 +252,6 @@ if st.session_state["authentication_status"]:
     elif nav == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
-        
         def_bk = st.session_state.get('autofill_book', "")
         book_idx = dropdowns["books"].index(def_bk) if def_bk in dropdowns["books"] else 0
 
@@ -255,7 +277,7 @@ if st.session_state["authentication_status"]:
                 if p != 0: update_bankroll(p, username)
                 st.session_state.autofill_event = ""; st.session_state.autofill_meta = {}; st.session_state.form_stake = 0.0; st.rerun()
 
-        # Add Book/State feature restored UNDER the form
+        # Add Book/State Expanders (Restored Under the Form)
         with st.expander("➕ Add New Book or State"):
             nb_col, ns_col = st.columns(2)
             new_bk = nb_col.text_input("New Book")
