@@ -149,7 +149,7 @@ if st.session_state["authentication_status"]:
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     df_current = load_data(username)
 
-    # --- SIDEBAR (FIXED ADJUST BALANCE) ---
+    # --- SIDEBAR ---
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.metric("💰 Bankroll", f"${st.session_state.bankroll:,.2f}")
     
@@ -200,8 +200,6 @@ if st.session_state["authentication_status"]:
     elif nav == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
-        
-        # Autofill handle
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
             dropdowns["books"].append(def_bk); save_dropdowns(dropdowns)
@@ -230,7 +228,9 @@ if st.session_state["authentication_status"]:
     elif nav == "📊 Dashboard":
         if not df_current.empty:
             df_dash = df_current.copy()
-            df_dash['Date'] = pd.to_datetime(df_dash['Date'])
+            # Ensure strictly date objects for X-axis
+            df_dash['Date'] = pd.to_datetime(df_dash['Date']).dt.date
+            
             daily_profit = df_dash.groupby('Date')['Profit'].sum().reset_index().sort_values('Date')
             daily_profit['Cumulative Profit'] = daily_profit['Profit'].cumsum()
             
@@ -239,8 +239,15 @@ if st.session_state["authentication_status"]:
             m2.metric("Days Active", len(daily_profit))
             m3.metric("Avg Daily Profit", f"${daily_profit['Profit'].mean():,.2f}")
 
-            st.plotly_chart(px.line(daily_profit, x='Date', y='Cumulative Profit', title="Profit Over Time (End of Day)", markers=True), use_container_width=True)
-            st.plotly_chart(px.bar(daily_profit, x='Date', y='Profit', title="Daily Individual Profit", color='Profit', color_continuous_scale=['red', 'gray', 'green']), use_container_width=True)
+            # Cumulative Chart - Explicitly formatted for Dates
+            fig_line = px.line(daily_profit, x='Date', y='Cumulative Profit', title="Profit Over Time (End of Day)", markers=True)
+            fig_line.update_xaxes(type='date', tickformat='%Y-%m-%d', dtick="D1")
+            st.plotly_chart(fig_line, use_container_width=True)
+            
+            # Daily Bar Chart - Explicitly formatted for Dates
+            fig_bar = px.bar(daily_profit, x='Date', y='Profit', title="Daily Individual Profit", color='Profit', color_continuous_scale=['red', 'gray', 'green'])
+            fig_bar.update_xaxes(type='date', tickformat='%Y-%m-%d', dtick="D1")
+            st.plotly_chart(fig_bar, use_container_width=True)
 
     elif nav == "🗄️ History":
         st.subheader("🏟️ Active Wagers")
