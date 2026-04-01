@@ -242,7 +242,7 @@ if st.session_state["authentication_status"]:
             state = c3.selectbox("State", dropdowns["states"])
             c4, c5, c6 = st.columns(3)
             event = c4.text_input("Event", value=st.session_state.get('autofill_event', ""))
-            stake = c5.number_input("Stake ($)", value=float(s_stake))
+            stake = c5.number_input("Stake ($)", value=float(s_stake), step=1.0)
             res = c6.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
             if st.form_submit_button("Save Bet"):
                 meta = st.session_state.get("autofill_meta", {})
