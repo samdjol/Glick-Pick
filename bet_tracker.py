@@ -107,6 +107,7 @@ def get_glicks_picks():
         return picks
     except: return []
 
+@st.cache_data(ttl=300)
 def load_data(user_prefix):
     ws = get_ws_smart(sheet, f"{user_prefix}_history")
     data = ws.get_all_records()
@@ -123,7 +124,9 @@ def save_data(df, user_prefix):
     df_save = df.copy()
     df_save['Date'] = pd.to_datetime(df_save['Date']).dt.strftime('%Y-%m-%d')
     ws.update(values=[df_save.columns.values.tolist()] + df_save.fillna('').values.tolist(), range_name='A1')
+    st.cache_data.clear() # <--- FORCES APP TO GET FRESH DATA NEXT RELOAD
 
+@st.cache_data(ttl=300)
 def load_bankroll(user_prefix):
     ws = get_ws_smart(sheet, f"{user_prefix}_bankroll")
     val = ws.acell('B1').value
@@ -133,11 +136,13 @@ def update_bankroll(amount, user_prefix):
     st.session_state.bankroll += amount
     ws = get_ws_smart(sheet, f"{user_prefix}_bankroll")
     ws.update_acell('B1', st.session_state.bankroll)
+    st.cache_data.clear() # <--- FORCES APP TO GET FRESH DATA NEXT RELOAD
 
 def set_bankroll(amount, user_prefix):
     st.session_state.bankroll = amount
     ws = get_ws_smart(sheet, f"{user_prefix}_bankroll")
     ws.update_acell('B1', amount)
+    st.cache_data.clear() # <--- FORCES APP TO GET FRESH DATA NEXT RELOAD
 
 @st.cache_data(ttl=3600)
 def load_dropdowns():
