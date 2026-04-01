@@ -107,6 +107,7 @@ def get_glicks_picks():
         return picks
     except: return []
 
+# Cached Data functions to prevent Google API Rate Limit
 @st.cache_data(ttl=300)
 def load_data(user_prefix):
     ws = get_ws_smart(sheet, f"{user_prefix}_history")
@@ -124,7 +125,7 @@ def save_data(df, user_prefix):
     df_save = df.copy()
     df_save['Date'] = pd.to_datetime(df_save['Date']).dt.strftime('%Y-%m-%d')
     ws.update(values=[df_save.columns.values.tolist()] + df_save.fillna('').values.tolist(), range_name='A1')
-    st.cache_data.clear() # <--- FORCES APP TO GET FRESH DATA NEXT RELOAD
+    st.cache_data.clear()
 
 @st.cache_data(ttl=300)
 def load_bankroll(user_prefix):
@@ -136,13 +137,13 @@ def update_bankroll(amount, user_prefix):
     st.session_state.bankroll += amount
     ws = get_ws_smart(sheet, f"{user_prefix}_bankroll")
     ws.update_acell('B1', st.session_state.bankroll)
-    st.cache_data.clear() # <--- FORCES APP TO GET FRESH DATA NEXT RELOAD
+    st.cache_data.clear()
 
 def set_bankroll(amount, user_prefix):
     st.session_state.bankroll = amount
     ws = get_ws_smart(sheet, f"{user_prefix}_bankroll")
     ws.update_acell('B1', amount)
-    st.cache_data.clear() # <--- FORCES APP TO GET FRESH DATA NEXT RELOAD
+    st.cache_data.clear()
 
 @st.cache_data(ttl=3600)
 def load_dropdowns():
@@ -185,15 +186,18 @@ if not st.session_state.get("authentication_status"):
 if st.session_state["authentication_status"]:
     username, name = st.session_state["username"], st.session_state["name"]
     
-    # Session State Initialization (Updating names to bind directly to widgets)
+    # State Initialization - Using a clear_counter forces clean widget renders without exceptions
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
-    if 'form_stake_widget' not in st.session_state: st.session_state.form_stake_widget = 0.0
-    if 'form_odds_widget' not in st.session_state: st.session_state.form_odds_widget = -110
+    if 'form_stake' not in st.session_state: st.session_state.form_stake = 0.0
+    if 'form_odds' not in st.session_state: st.session_state.form_odds = -110
+    if 'form_event' not in st.session_state: st.session_state.form_event = ""
+    if 'clear_counter' not in st.session_state: st.session_state.clear_counter = 0
     if 'nav_bar_key' not in st.session_state: st.session_state.nav_bar_key = "🎯 Picks"
 
     df_current = load_data(username)
+    cc = st.session_state.clear_counter
 
-    # --- SIDEBAR UI (Compact) ---
+    # --- SIDEBAR UI ---
     with st.sidebar:
         authenticator.logout('Logout', 'sidebar')
         st.metric("💰 Bankroll", f"\${st.session_state.bankroll:,.2f}")
@@ -213,27 +217,29 @@ if st.session_state["authentication_status"]:
         round_toggle = st.toggle("Round", value=True)
         k_sel = st.radio("Mult", ["Full", "Half", "Quarter"], index=2, horizontal=True)
         
-        # Suggested Stake calculates automatically from the widget state
-        dec_odds = american_to_decimal(st.session_state.form_odds_widget)
+        # Look ahead at the widget value to prevent 1-keystroke lag in the calculation
+        working_odds = st.session_state.get(f"odd_{cc}", st.session_state.form_odds)
+        dec_odds = american_to_decimal(working_odds)
         raw_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
         calc_stake = round(raw_k * {"Full":1.0, "Half":0.5, "Quarter":0.25}[k_sel] * st.session_state.bankroll) if round_toggle else round(raw_k * 0.25 * st.session_state.bankroll, 2)
         
         sc1, sc2 = st.columns([2, 1])
         sc1.metric("Suggested", f"\${calc_stake:,.2f}")
         if sc2.button("Apply"):
-            # Update the form widget directly and force navigation
-            st.session_state.form_stake_widget = float(calc_stake)
+            st.session_state.form_stake = float(calc_stake)
+            st.session_state.clear_counter += 1 # Forces widget to absorb the new value
             st.session_state.nav_bar_key = "📝 Log New Bet"
             st.rerun()
 
     # --- MAIN NAVIGATION ---
     if st.session_state.get('pending_track'):
         track = st.session_state.pending_track
-        st.session_state.autofill_event = track['event']
+        st.session_state.form_event = track['event']
+        st.session_state.form_odds = int(track['odds'])
         st.session_state.autofill_book = track['book']
-        st.session_state.form_odds_widget = int(track['odds'])
         st.session_state.autofill_meta = {"game_pk": track['game_pk'], "player_name": track['player_name'], "market": track['market'], "line": track['line'], "dir": track['dir'], "odds": track['odds']}
         st.session_state.nav_bar_key = "📝 Log New Bet"
+        st.session_state.clear_counter += 1 # Forces widgets to absorb the new track data
         del st.session_state['pending_track']
 
     nav = st.segmented_control("Navigation", ["🎯 Picks", "📝 Log New Bet", "📊 Dashboard", "🗄️ History"], key="nav_bar_key", selection_mode="single", default="🎯 Picks")
@@ -255,29 +261,45 @@ if st.session_state["authentication_status"]:
         def_bk = st.session_state.get('autofill_book', "")
         book_idx = dropdowns["books"].index(def_bk) if def_bk in dropdowns["books"] else 0
 
-        with st.form("bet_form", clear_on_submit=True):
+        # Form replaced by container for real-time reactivity
+        with st.container(border=True):
             r1c1, r1c2, r1c3 = st.columns(3)
+            # These don't use the clear counter so they persist across fast bets (like multiple DK bets)
             date = r1c1.date_input("Date", datetime.datetime.now(NYC_TZ).date())
             book = r1c2.selectbox("Sportsbook", dropdowns["books"], index=book_idx)
             state = r1c3.selectbox("State", dropdowns["states"])
             
             r2c1, r2c2, r2c3 = st.columns(3)
-            event = r2c1.text_input("Event", value=st.session_state.get('autofill_event', ""))
+            # These clear when a bet is saved or a pick is tracked
+            event = r2c1.text_input("Event", value=st.session_state.form_event, key=f"evt_{cc}")
+            odds_input = r2c2.number_input("American Odds", value=int(st.session_state.form_odds), step=1, key=f"odd_{cc}")
+            stake_input = r2c3.number_input("Stake ($)", value=float(st.session_state.form_stake), step=1.0, key=f"stk_{cc}")
             
-            # Using widget keys binds these directly to the session_state
-            odds_input = r2c2.number_input("American Odds", step=1, key="form_odds_widget")
-            stake_input = r2c3.number_input("Stake ($)", step=1.0, key="form_stake_widget")
-
+            # Sync back so Sidebar can read
+            st.session_state.form_event = event
+            st.session_state.form_odds = odds_input
+            st.session_state.form_stake = stake_input
+            
             r3c1 = st.columns(3)[0]
-            res = r3c1.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
+            res = r3c1.selectbox("Status", ["Pending", "Win", "Loss", "Push"], key=f"res_{cc}")
             
-            if st.form_submit_button("Save Bet"):
+            # Using primary button instead of form_submit
+            if st.button("Save Bet", type="primary"):
                 meta = st.session_state.get("autofill_meta", {})
                 p = round(stake_input * (american_to_decimal(odds_input) - 1), 2) if res == "Win" else (-stake_input if res == "Loss" else 0)
                 new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": odds_input, "Edge": edge_pct/100, "Stake": stake_input, "Result": res, "Profit": p, "game_pk": meta.get("game_pk", ""), "player_name": meta.get("player_name", ""), "market": meta.get("market", ""), "line": meta.get("line", ""), "dir": meta.get("dir", "")}
+                
+                # Fetch existing, append, save
                 save_data(pd.concat([df_current, pd.DataFrame([new_row])], ignore_index=True), username)
                 if p != 0: update_bankroll(p, username)
-                st.session_state.autofill_event = ""; st.session_state.autofill_meta = {}; st.session_state.form_stake_widget = 0.0; st.rerun()
+                
+                # Reset fields back to clean state
+                st.session_state.form_event = ""
+                st.session_state.form_odds = -110
+                st.session_state.form_stake = 0.0
+                st.session_state.autofill_meta = {}
+                st.session_state.clear_counter += 1
+                st.rerun()
 
         with st.expander("➕ Add New Book or State"):
             nb_col, ns_col = st.columns(2)
