@@ -311,21 +311,33 @@ if st.session_state["authentication_status"]:
                 dropdowns['states'].append(new_st); save_dropdowns(dropdowns); st.rerun()
 
     elif nav == "📊 Dashboard":
-        if not df_current.empty:
-            df_dash = df_current.copy()
-            df_dash['Date'] = pd.to_datetime(df_dash['Date']).dt.date
-            daily = df_dash.groupby('Date')['Profit'].sum().reset_index().sort_values('Date')
-            daily['Cumulative Profit'] = daily['Profit'].cumsum()
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Total P/L", f"\${df_current['Profit'].sum():,.2f}")
-            m2.metric("Days Active", len(daily))
-            m3.metric("Avg Daily Profit", f"\${daily['Profit'].mean():,.2f}")
-            fig_line = px.line(daily, x='Date', y='Cumulative Profit', title="Profit (End of Day)", markers=True)
-            fig_line.update_xaxes(type='date', tickformat='%Y-%m-%d', dtick="D1")
-            st.plotly_chart(fig_line, use_container_width=True)
-            fig_bar = px.bar(daily, x='Date', y='Profit', title="Daily Individual Profit", color='Profit', color_continuous_scale=['red', 'gray', 'green'])
-            fig_bar.update_xaxes(type='date', tickformat='%Y-%m-%d', dtick="D1")
-            st.plotly_chart(fig_bar, use_container_width=True)
+            if not df_current.empty:
+                df_dash = df_current.copy()
+                df_dash['Date'] = pd.to_datetime(df_dash['Date']).dt.date
+                daily = df_dash.groupby('Date')['Profit'].sum().reset_index().sort_values('Date')
+                daily['Cumulative Profit'] = daily['Profit'].cumsum()
+                
+                # --- NEW METRICS CALCULATIONS ---
+                total_bets = len(df_dash)
+                wins = len(df_dash[df_dash['Result'] == 'Win'])
+                losses = len(df_dash[df_dash['Result'] == 'Loss'])
+                pushes = len(df_dash[df_dash['Result'] == 'Push'])
+                
+                # Expanded to 5 columns
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Total P/L", f"\${df_current['Profit'].sum():,.2f}")
+                m2.metric("Total Bets", total_bets)
+                m3.metric("Record (W-L-P)", f"{wins}-{losses}-{pushes}")
+                m4.metric("Days Active", len(daily))
+                m5.metric("Avg Daily Profit", f"\${daily['Profit'].mean():,.2f}")
+                
+                fig_line = px.line(daily, x='Date', y='Cumulative Profit', title="Profit (End of Day)", markers=True)
+                fig_line.update_xaxes(type='date', tickformat='%Y-%m-%d', dtick="D1")
+                st.plotly_chart(fig_line, use_container_width=True)
+                
+                fig_bar = px.bar(daily, x='Date', y='Profit', title="Daily Individual Profit", color='Profit', color_continuous_scale=['red', 'gray', 'green'])
+                fig_bar.update_xaxes(type='date', tickformat='%Y-%m-%d', dtick="D1")
+                st.plotly_chart(fig_bar, use_container_width=True)
 
     elif nav == "🗄️ History":
         st.subheader("🏟️ Active Wagers")
