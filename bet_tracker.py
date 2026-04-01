@@ -1,4 +1,5 @@
 import streamlit as st
+import pd
 import pandas as pd
 import datetime
 from zoneinfo import ZoneInfo
@@ -44,7 +45,6 @@ def get_live_mlb_stats(game_pk, player_name, market):
                         f_i = int(float(ip))
                         part = round((float(ip) - f_i) * 10)
                         val = (f_i * 3) + part
-                        # Using a safer path for game status if available
                         return {"val": val, "status": data.get('status', {}).get('abstractGameState')}
                     elif "Bases" in str(market):
                         b = stats.get('batting', {})
@@ -75,19 +75,14 @@ def get_glicks_picks():
     headers = {"apikey": "sb_publishable_aAFvyqUjJFYQsuG8GY2KTA_U4SLd545", "Authorization": "Bearer sb_publishable_aAFvyqUjJFYQsuG8GY2KTA_U4SLd545"}
     try:
         data = requests.get(url, headers=headers).json()
-        
-        # --- FIXED SORTING: Convert "10:10 PM ET" strings to sortable time objects ---
         def parse_time(t_str):
             if not t_str: return pd.Timestamp.max
             try:
-                # Clean " ET" and parse as datetime for chronological sorting
                 clean_t = str(t_str).replace(' ET', '').strip()
                 return pd.to_datetime(clean_t)
             except:
                 return pd.Timestamp.max
-
         data = sorted(data, key=lambda x: parse_time(x.get('game_time')))
-        
         picks = []
         for item in data:
             matchup = get_matchup_string(item)
@@ -173,36 +168,49 @@ if not st.session_state.get("authentication_status"):
 
 if st.session_state["authentication_status"]:
     username, name = st.session_state["username"], st.session_state["name"]
+    
+    # Initialize State Keys
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
+    if 'form_stake' not in st.session_state: st.session_state.form_stake = 0.0
+    if 'form_odds' not in st.session_state: st.session_state.form_odds = -110
+
     df_current = load_data(username)
 
     # Sidebar
     authenticator.logout('Logout', 'sidebar')
     st.sidebar.metric("💰 Bankroll", f"\${st.session_state.bankroll:,.2f}")
     with st.sidebar.expander("⚙️ Adjust Balance"):
-        adj_action = st.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
+        adj_action = st.sidebar.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
         if adj_action == "Add/Remove":
-            adj_v = st.number_input("Amount ($)", value=0.0)
-            if st.button("Update Balance"): update_bankroll(adj_v, username); st.rerun()
+            adj_v = st.sidebar.number_input("Amount ($)", value=0.0)
+            if st.sidebar.button("Update Balance"): update_bankroll(adj_v, username); st.rerun()
         else:
-            set_v = st.number_input("Exact ($)", value=float(st.session_state.bankroll))
-            if st.button("Set Balance"): set_bankroll(set_v, username); st.rerun()
+            set_v = st.sidebar.number_input("Exact ($)", value=float(st.session_state.bankroll))
+            if st.sidebar.button("Set Balance"): set_bankroll(set_v, username); st.rerun()
 
     st.sidebar.divider()
     st.sidebar.markdown("### 🧮 Kelly Calculator")
-    input_odds = st.sidebar.number_input("American Odds", step=1, value=-110)
+    
+    # Kelly Calculation references the ODDS in the Form (session_state)
     edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, 15.0, step=1.0)
     round_toggle = st.sidebar.toggle("Round to Whole Number", value=True)
     k_sel = st.sidebar.radio("Multiplier", ["Full", "Half", "Quarter"], index=2, horizontal=True)
-    dec_odds = american_to_decimal(input_odds)
+    
+    dec_odds = american_to_decimal(st.session_state.form_odds)
     raw_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
     s_stake = round(raw_k * {"Full":1.0, "Half":0.5, "Quarter":0.25}[k_sel] * st.session_state.bankroll) if round_toggle else round(raw_k * 0.25 * st.session_state.bankroll, 2)
-    st.sidebar.metric("Suggested Stake", f"\${s_stake:,.2f}")
+    
+    c1, c2 = st.sidebar.columns([2, 1])
+    c1.metric("Suggested", f"\${s_stake:,.2f}")
+    if c2.button("Apply"):
+        st.session_state.form_stake = float(s_stake)
+        st.rerun()
 
     if st.session_state.get('pending_track'):
         track = st.session_state.pending_track
         st.session_state.autofill_event = track['event']
         st.session_state.autofill_book = track['book']
+        st.session_state.form_odds = int(track['odds'])
         st.session_state.autofill_meta = {"game_pk": track['game_pk'], "player_name": track['player_name'], "market": track['market'], "line": track['line'], "dir": track['dir'], "odds": track['odds']}
         st.session_state['nav_bar_key'] = "📝 Log New Bet"
         del st.session_state['pending_track']
@@ -213,45 +221,57 @@ if st.session_state["authentication_status"]:
         picks = get_glicks_picks()
         for p in picks:
             with st.container(border=True):
-                c1, c2 = st.columns([4, 1])
-                c1.write(f"**{p['Event']}**")
-                c1.write(f"⏰ **{p['Time']}** | 🏦 **{p['Book']}** | 📈 **{p['Price']}**")
-                if c2.button("Track", key=p['Event']):
+                col1, col2 = st.columns([4, 1])
+                col1.write(f"**{p['Event']}**")
+                col1.write(f"⏰ **{p['Time']}** | 🏦 **{p['Book']}** | 📈 **{p['Price']}**")
+                if col2.button("Track", key=p['Event']):
                     st.session_state.pending_track = {"event": p['Event'], "book": p['Book'], "odds": p['raw_odds'], "game_pk": p['game_pk'], "player_name": p['player_name'], "market": p['market'], "line": p['line'], "dir": p['dir']}
                     st.rerun()
 
     elif nav == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
-        with st.expander("➕ Add New Book or State"):
-            nb_col, ns_col = st.columns(2)
-            new_bk = nb_col.text_input("New Book")
-            if nb_col.button("Add Book") and new_bk:
-                dropdowns['books'].append(new_bk); save_dropdowns(dropdowns); st.rerun()
-            new_st = ns_col.text_input("New State")
-            if ns_col.button("Add State") and new_st:
-                dropdowns['states'].append(new_st); save_dropdowns(dropdowns); st.rerun()
-
+        
+        # Form UI
         def_bk = st.session_state.get('autofill_book', "")
         book_idx = dropdowns["books"].index(def_bk) if def_bk in dropdowns["books"] else 0
 
         with st.form("bet_form", clear_on_submit=True):
-            c1, c2, c3 = st.columns(3)
-            date = c1.date_input("Date", datetime.datetime.now(NYC_TZ).date())
-            book = c2.selectbox("Sportsbook", dropdowns["books"], index=book_idx)
-            state = c3.selectbox("State", dropdowns["states"])
-            c4, c5, c6 = st.columns(3)
-            event = c4.text_input("Event", value=st.session_state.get('autofill_event', ""))
-            stake = c5.number_input("Stake ($)", value=float(s_stake), step=1.0)
-            res = c6.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
+            r1c1, r1c2, r1c3 = st.columns(3)
+            date = r1c1.date_input("Date", datetime.datetime.now(NYC_TZ).date())
+            book = r1c2.selectbox("Sportsbook", dropdowns["books"], index=book_idx)
+            state = r1c3.selectbox("State", dropdowns["states"])
+            
+            r2c1, r2c2, r2c3 = st.columns(3)
+            event = r2c1.text_input("Event", value=st.session_state.get('autofill_event', ""))
+            
+            # Use Session State Keys to decouple Sidebar Calc from direct Form update
+            odds_input = r2c2.number_input("American Odds", value=int(st.session_state.form_odds), step=1, key="form_odds")
+            stake_input = r2c3.number_input("Stake ($)", value=float(st.session_state.form_stake), step=1.0, key="form_stake")
+            
+            r3c1 = st.columns(3)[0]
+            res = r3c1.selectbox("Status", ["Pending", "Win", "Loss", "Push"])
+            
             if st.form_submit_button("Save Bet"):
                 meta = st.session_state.get("autofill_meta", {})
-                odds = meta.get('odds', input_odds)
-                p = round(stake * (american_to_decimal(odds) - 1), 2) if res == "Win" else (-stake if res == "Loss" else 0)
-                new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": odds, "Edge": edge_pct/100, "Stake": stake, "Result": res, "Profit": p, "game_pk": meta.get("game_pk", ""), "player_name": meta.get("player_name", ""), "market": meta.get("market", ""), "line": meta.get("line", ""), "dir": meta.get("dir", "")}
+                p = round(stake_input * (american_to_decimal(odds_input) - 1), 2) if res == "Win" else (-stake_input if res == "Loss" else 0)
+                
+                new_row = {
+                    "Date": date, "Book": book, "State": state, "Event": event, 
+                    "Odds": odds_input, "Edge": edge_pct/100, "Stake": stake_input, 
+                    "Result": res, "Profit": p, "game_pk": meta.get("game_pk", ""), 
+                    "player_name": meta.get("player_name", ""), "market": meta.get("market", ""), 
+                    "line": meta.get("line", ""), "dir": meta.get("dir", "")
+                }
+                
                 save_data(pd.concat([df_current, pd.DataFrame([new_row])], ignore_index=True), username)
                 if p != 0: update_bankroll(p, username)
-                st.session_state.autofill_event = ""; st.session_state.autofill_meta = {}; st.rerun()
+                
+                # Reset
+                st.session_state.autofill_event = ""
+                st.session_state.autofill_meta = {}
+                st.session_state.form_stake = 0.0
+                st.rerun()
 
     elif nav == "📊 Dashboard":
         if not df_current.empty:
@@ -280,7 +300,6 @@ if st.session_state["authentication_status"]:
                 with st.container(border=True):
                     col1, col2, col3, col4 = st.columns([3, 1, 1, 0.5])
                     col1.write(f"**{row['Event']}** | {row['Book']} ({row['Odds']})")
-                    # Using \$ ensures dollar signs are treated as text and bolding stays intact
                     col1.write(f"💰 Wager: **\${row['Stake']:.2f}** | 📈 Potential Profit: **\${pot_profit:.2f}**")
                     
                     if row.get('game_pk'):
@@ -303,7 +322,6 @@ if st.session_state["authentication_status"]:
                         save_data(df_current.drop(i), username); st.rerun()
         st.divider()
         st.subheader("📜 Settled History")
-        # Limited view: only show core columns
         display_cols = ['Date', 'Book', 'State', 'Event', 'Odds', 'Edge', 'Stake', 'Result', 'Profit']
         settled = df_current[df_current['Result'] != 'Pending'].sort_values('Date', ascending=False)
         st.dataframe(settled[display_cols], width='stretch', hide_index=True)
