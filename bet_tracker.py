@@ -38,18 +38,19 @@ def get_live_mlb_stats(game_pk, player_name, market):
             for p_id, p_info in players.items():
                 if player_name.lower() in p_info['person']['fullName'].lower():
                     stats = p_info['stats']
+                    game_status = data.get('status', {}).get('abstractGameState', "")
                     if "Outs" in str(market):
                         pitching = stats.get('pitching', {})
                         ip = pitching.get('inningsPitched', "0.0")
                         f_i = int(float(ip))
                         part = round((float(ip) - f_i) * 10)
                         val = (f_i * 3) + part
-                        return {"val": val, "status": data.get('status', {}).get('abstractGameState')}
+                        return {"val": val, "status": game_status}
                     elif "Bases" in str(market):
                         b = stats.get('batting', {})
                         h, d, t, hr = b.get('hits', 0), b.get('doubles', 0), b.get('triples', 0), b.get('homeRuns', 0)
                         val = (h - d - t - hr) + (d * 2) + (t * 3) + (hr * 4)
-                        return {"val": val, "status": data.get('status', {}).get('abstractGameState')}
+                        return {"val": val, "status": game_status}
     except: return None
     return None
 
@@ -79,8 +80,7 @@ def get_glicks_picks():
             try:
                 clean_t = str(t_str).replace(' ET', '').strip()
                 return pd.to_datetime(clean_t)
-            except:
-                return pd.Timestamp.max
+            except: return pd.Timestamp.max
         data = sorted(data, key=lambda x: parse_time(x.get('game_time')))
         picks = []
         for item in data:
@@ -168,7 +168,7 @@ if not st.session_state.get("authentication_status"):
 if st.session_state["authentication_status"]:
     username, name = st.session_state["username"], st.session_state["name"]
     
-    # Initialize State Keys
+    # Session State Initialization
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     if 'form_stake' not in st.session_state: st.session_state.form_stake = 0.0
     if 'form_odds' not in st.session_state: st.session_state.form_odds = -110
@@ -189,20 +189,19 @@ if st.session_state["authentication_status"]:
 
     st.sidebar.divider()
     st.sidebar.markdown("### 🧮 Kelly Calculator")
-    
-    # Kelly Calculation references the ODDS in the Form (session_state)
     edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, 15.0, step=1.0)
     round_toggle = st.sidebar.toggle("Round to Whole Number", value=True)
     k_sel = st.sidebar.radio("Multiplier", ["Full", "Half", "Quarter"], index=2, horizontal=True)
     
+    # Calculator uses the Odds currently in the Session State (which matches the form)
     dec_odds = american_to_decimal(st.session_state.form_odds)
     raw_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
-    s_stake = round(raw_k * {"Full":1.0, "Half":0.5, "Quarter":0.25}[k_sel] * st.session_state.bankroll) if round_toggle else round(raw_k * 0.25 * st.session_state.bankroll, 2)
+    calc_stake = round(raw_k * {"Full":1.0, "Half":0.5, "Quarter":0.25}[k_sel] * st.session_state.bankroll) if round_toggle else round(raw_k * 0.25 * st.session_state.bankroll, 2)
     
-    c1, c2 = st.sidebar.columns([2, 1])
-    c1.metric("Suggested", f"\${s_stake:,.2f}")
-    if c2.button("Apply"):
-        st.session_state.form_stake = float(s_stake)
+    sc1, sc2 = st.sidebar.columns([2, 1])
+    sc1.metric("Suggested", f"\${calc_stake:,.2f}")
+    if sc2.button("Apply"):
+        st.session_state.form_stake = float(calc_stake)
         st.rerun()
 
     if st.session_state.get('pending_track'):
@@ -231,7 +230,6 @@ if st.session_state["authentication_status"]:
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
         
-        # Form UI
         def_bk = st.session_state.get('autofill_book', "")
         book_idx = dropdowns["books"].index(def_bk) if def_bk in dropdowns["books"] else 0
 
@@ -243,8 +241,6 @@ if st.session_state["authentication_status"]:
             
             r2c1, r2c2, r2c3 = st.columns(3)
             event = r2c1.text_input("Event", value=st.session_state.get('autofill_event', ""))
-            
-            # Use Session State Keys to decouple Sidebar Calc from direct Form update
             odds_input = r2c2.number_input("American Odds", value=int(st.session_state.form_odds), step=1, key="form_odds")
             stake_input = r2c3.number_input("Stake ($)", value=float(st.session_state.form_stake), step=1.0, key="form_stake")
             
@@ -254,23 +250,20 @@ if st.session_state["authentication_status"]:
             if st.form_submit_button("Save Bet"):
                 meta = st.session_state.get("autofill_meta", {})
                 p = round(stake_input * (american_to_decimal(odds_input) - 1), 2) if res == "Win" else (-stake_input if res == "Loss" else 0)
-                
-                new_row = {
-                    "Date": date, "Book": book, "State": state, "Event": event, 
-                    "Odds": odds_input, "Edge": edge_pct/100, "Stake": stake_input, 
-                    "Result": res, "Profit": p, "game_pk": meta.get("game_pk", ""), 
-                    "player_name": meta.get("player_name", ""), "market": meta.get("market", ""), 
-                    "line": meta.get("line", ""), "dir": meta.get("dir", "")
-                }
-                
+                new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": odds_input, "Edge": edge_pct/100, "Stake": stake_input, "Result": res, "Profit": p, "game_pk": meta.get("game_pk", ""), "player_name": meta.get("player_name", ""), "market": meta.get("market", ""), "line": meta.get("line", ""), "dir": meta.get("dir", "")}
                 save_data(pd.concat([df_current, pd.DataFrame([new_row])], ignore_index=True), username)
                 if p != 0: update_bankroll(p, username)
-                
-                # Reset
-                st.session_state.autofill_event = ""
-                st.session_state.autofill_meta = {}
-                st.session_state.form_stake = 0.0
-                st.rerun()
+                st.session_state.autofill_event = ""; st.session_state.autofill_meta = {}; st.session_state.form_stake = 0.0; st.rerun()
+
+        # Add Book/State feature restored UNDER the form
+        with st.expander("➕ Add New Book or State"):
+            nb_col, ns_col = st.columns(2)
+            new_bk = nb_col.text_input("New Book")
+            if nb_col.button("Add Book") and new_bk:
+                dropdowns['books'].append(new_bk); save_dropdowns(dropdowns); st.rerun()
+            new_st = ns_col.text_input("New State")
+            if ns_col.button("Add State") and new_st:
+                dropdowns['states'].append(new_st); save_dropdowns(dropdowns); st.rerun()
 
     elif nav == "📊 Dashboard":
         if not df_current.empty:
@@ -300,7 +293,6 @@ if st.session_state["authentication_status"]:
                     col1, col2, col3, col4 = st.columns([3, 1, 1, 0.5])
                     col1.write(f"**{row['Event']}** | {row['Book']} ({row['Odds']})")
                     col1.write(f"💰 Wager: **\${row['Stake']:.2f}** | 📈 Potential Profit: **\${pot_profit:.2f}**")
-                    
                     if row.get('game_pk'):
                         stats = get_live_mlb_stats(row['game_pk'], row['player_name'], row['market'])
                         if stats:
