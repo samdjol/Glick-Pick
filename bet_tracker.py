@@ -163,9 +163,11 @@ if st.session_state["authentication_status"]:
             if st.button("Set Balance"): set_bankroll(set_v, username); st.rerun()
 
     st.sidebar.divider()
-    st.sidebar.header("🧮 Kelly Calculator")
+    # Smaller Markdown header for Kelly Calculator
+    st.sidebar.markdown("### 🧮 Kelly Calculator")
     input_odds = st.sidebar.number_input("American Odds", step=1, value=-110)
-    edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, 15.0)
+    # Edge steps increased to 1.0
+    edge_pct = st.sidebar.number_input("Edge (%)", 0.0, 100.0, 15.0, step=1.0)
     round_toggle = st.sidebar.toggle("Round to Whole Number", value=True)
     k_sel = st.sidebar.radio("Multiplier", ["Full", "Half", "Quarter"], index=2, horizontal=True)
     dec_odds = american_to_decimal(input_odds)
@@ -174,7 +176,7 @@ if st.session_state["authentication_status"]:
     suggested_stake = round(raw_suggested) if round_toggle else round(raw_suggested, 2)
     st.sidebar.metric("Suggested Stake", f"${suggested_stake:,.2f}")
 
-    # Navigation logic
+    # Track logic redirection
     if st.session_state.get('pending_track'):
         track_data = st.session_state.pending_track
         st.session_state['odds_input'] = track_data['odds']
@@ -200,6 +202,20 @@ if st.session_state["authentication_status"]:
     elif nav == "📝 Log New Bet":
         st.subheader("Enter Wager Details")
         dropdowns = load_dropdowns()
+        
+        # Add New Options Expander
+        with st.expander("➕ Add New Book or State"):
+            nb_col, ns_col = st.columns(2)
+            new_bk = nb_col.text_input("New Book Name")
+            if nb_col.button("Add Book") and new_bk:
+                if new_bk not in dropdowns['books']:
+                    dropdowns['books'].append(new_bk); save_dropdowns(dropdowns); st.rerun()
+            new_st = ns_col.text_input("New State Name")
+            if ns_col.button("Add State") and new_st:
+                if new_st not in dropdowns['states']:
+                    dropdowns['states'].append(new_st); save_dropdowns(dropdowns); st.rerun()
+
+        # Handle autofill book addition automatically
         def_bk = st.session_state.get('autofill_book', "")
         if def_bk and def_bk not in dropdowns["books"]:
             dropdowns["books"].append(def_bk); save_dropdowns(dropdowns)
@@ -228,9 +244,7 @@ if st.session_state["authentication_status"]:
     elif nav == "📊 Dashboard":
         if not df_current.empty:
             df_dash = df_current.copy()
-            # Ensure strictly date objects for X-axis
             df_dash['Date'] = pd.to_datetime(df_dash['Date']).dt.date
-            
             daily_profit = df_dash.groupby('Date')['Profit'].sum().reset_index().sort_values('Date')
             daily_profit['Cumulative Profit'] = daily_profit['Profit'].cumsum()
             
@@ -239,12 +253,11 @@ if st.session_state["authentication_status"]:
             m2.metric("Days Active", len(daily_profit))
             m3.metric("Avg Daily Profit", f"${daily_profit['Profit'].mean():,.2f}")
 
-            # Cumulative Chart - Explicitly formatted for Dates
+            # Fixed X-Axis for strictly dates
             fig_line = px.line(daily_profit, x='Date', y='Cumulative Profit', title="Profit Over Time (End of Day)", markers=True)
             fig_line.update_xaxes(type='date', tickformat='%Y-%m-%d', dtick="D1")
             st.plotly_chart(fig_line, use_container_width=True)
             
-            # Daily Bar Chart - Explicitly formatted for Dates
             fig_bar = px.bar(daily_profit, x='Date', y='Profit', title="Daily Individual Profit", color='Profit', color_continuous_scale=['red', 'gray', 'green'])
             fig_bar.update_xaxes(type='date', tickformat='%Y-%m-%d', dtick="D1")
             st.plotly_chart(fig_bar, use_container_width=True)
