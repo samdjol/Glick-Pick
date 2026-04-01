@@ -107,7 +107,6 @@ def get_glicks_picks():
         return picks
     except: return []
 
-# Cached Data functions to prevent Google API Rate Limit
 @st.cache_data(ttl=300)
 def load_data(user_prefix):
     ws = get_ws_smart(sheet, f"{user_prefix}_history")
@@ -170,6 +169,24 @@ def get_ws_smart(sheet, name):
     if target in all_ws: return all_ws[target]
     st.error(f"Tab Not Found: '{target}'"); st.stop()
 
+# --- NEW: AMERICAN ODDS GAP HANDLER ---
+def handle_odds_gap(widget_key):
+    """Jumps over the invalid American odds range (-100 to 99)."""
+    if widget_key not in st.session_state: return
+    val = st.session_state[widget_key]
+    
+    # If the number falls into the deadzone
+    if -100 <= val <= 99:
+        if val == 99:        # User clicked minus from 100
+            st.session_state[widget_key] = -101
+        elif val == -100:    # User clicked plus from -101
+            st.session_state[widget_key] = 100
+        elif val >= 0:       # User typed a random positive number under 100
+            st.session_state[widget_key] = 100
+        else:                # User typed a random negative number above -100
+            st.session_state[widget_key] = -101
+
+
 # --- 6. AUTH & UI ---
 @st.cache_data(ttl=3600)
 def load_credentials():
@@ -186,7 +203,6 @@ if not st.session_state.get("authentication_status"):
 if st.session_state["authentication_status"]:
     username, name = st.session_state["username"], st.session_state["name"]
     
-    # State Initialization - Using a clear_counter forces clean widget renders without exceptions
     if 'bankroll' not in st.session_state: st.session_state.bankroll = load_bankroll(username)
     if 'form_stake' not in st.session_state: st.session_state.form_stake = 0.0
     if 'form_odds' not in st.session_state: st.session_state.form_odds = -110
@@ -217,7 +233,6 @@ if st.session_state["authentication_status"]:
         round_toggle = st.toggle("Round", value=True)
         k_sel = st.radio("Mult", ["Full", "Half", "Quarter"], index=2, horizontal=True)
         
-        # Look ahead at the widget value to prevent 1-keystroke lag in the calculation
         working_odds = st.session_state.get(f"odd_{cc}", st.session_state.form_odds)
         dec_odds = american_to_decimal(working_odds)
         raw_k = (edge_pct/100) / (dec_odds - 1) if (dec_odds - 1) != 0 else 0
@@ -227,7 +242,7 @@ if st.session_state["authentication_status"]:
         sc1.metric("Suggested", f"\${calc_stake:,.2f}")
         if sc2.button("Apply"):
             st.session_state.form_stake = float(calc_stake)
-            st.session_state.clear_counter += 1 # Forces widget to absorb the new value
+            st.session_state.clear_counter += 1 
             st.session_state.nav_bar_key = "📝 Log New Bet"
             st.rerun()
 
@@ -239,7 +254,7 @@ if st.session_state["authentication_status"]:
         st.session_state.autofill_book = track['book']
         st.session_state.autofill_meta = {"game_pk": track['game_pk'], "player_name": track['player_name'], "market": track['market'], "line": track['line'], "dir": track['dir'], "odds": track['odds']}
         st.session_state.nav_bar_key = "📝 Log New Bet"
-        st.session_state.clear_counter += 1 # Forces widgets to absorb the new track data
+        st.session_state.clear_counter += 1
         del st.session_state['pending_track']
 
     nav = st.segmented_control("Navigation", ["🎯 Picks", "📝 Log New Bet", "📊 Dashboard", "🗄️ History"], key="nav_bar_key", selection_mode="single", default="🎯 Picks")
@@ -261,21 +276,28 @@ if st.session_state["authentication_status"]:
         def_bk = st.session_state.get('autofill_book', "")
         book_idx = dropdowns["books"].index(def_bk) if def_bk in dropdowns["books"] else 0
 
-        # Form replaced by container for real-time reactivity
         with st.container(border=True):
             r1c1, r1c2, r1c3 = st.columns(3)
-            # These don't use the clear counter so they persist across fast bets (like multiple DK bets)
             date = r1c1.date_input("Date", datetime.datetime.now(NYC_TZ).date())
             book = r1c2.selectbox("Sportsbook", dropdowns["books"], index=book_idx)
             state = r1c3.selectbox("State", dropdowns["states"])
             
             r2c1, r2c2, r2c3 = st.columns(3)
-            # These clear when a bet is saved or a pick is tracked
             event = r2c1.text_input("Event", value=st.session_state.form_event, key=f"evt_{cc}")
-            odds_input = r2c2.number_input("American Odds", value=int(st.session_state.form_odds), step=1, key=f"odd_{cc}")
+            
+            # --- MODIFIED: Added on_change callback to trigger the deadzone skip ---
+            odds_key = f"odd_{cc}"
+            odds_input = r2c2.number_input(
+                "American Odds", 
+                value=int(st.session_state.form_odds), 
+                step=1, 
+                key=odds_key,
+                on_change=handle_odds_gap,
+                args=(odds_key,)
+            )
+            
             stake_input = r2c3.number_input("Stake ($)", value=float(st.session_state.form_stake), step=1.0, key=f"stk_{cc}")
             
-            # Sync back so Sidebar can read
             st.session_state.form_event = event
             st.session_state.form_odds = odds_input
             st.session_state.form_stake = stake_input
@@ -283,17 +305,14 @@ if st.session_state["authentication_status"]:
             r3c1 = st.columns(3)[0]
             res = r3c1.selectbox("Status", ["Pending", "Win", "Loss", "Push"], key=f"res_{cc}")
             
-            # Using primary button instead of form_submit
             if st.button("Save Bet", type="primary"):
                 meta = st.session_state.get("autofill_meta", {})
                 p = round(stake_input * (american_to_decimal(odds_input) - 1), 2) if res == "Win" else (-stake_input if res == "Loss" else 0)
                 new_row = {"Date": date, "Book": book, "State": state, "Event": event, "Odds": odds_input, "Edge": edge_pct/100, "Stake": stake_input, "Result": res, "Profit": p, "game_pk": meta.get("game_pk", ""), "player_name": meta.get("player_name", ""), "market": meta.get("market", ""), "line": meta.get("line", ""), "dir": meta.get("dir", "")}
                 
-                # Fetch existing, append, save
                 save_data(pd.concat([df_current, pd.DataFrame([new_row])], ignore_index=True), username)
                 if p != 0: update_bankroll(p, username)
                 
-                # Reset fields back to clean state
                 st.session_state.form_event = ""
                 st.session_state.form_odds = -110
                 st.session_state.form_stake = 0.0
@@ -311,33 +330,31 @@ if st.session_state["authentication_status"]:
                 dropdowns['states'].append(new_st); save_dropdowns(dropdowns); st.rerun()
 
     elif nav == "📊 Dashboard":
-            if not df_current.empty:
-                df_dash = df_current.copy()
-                df_dash['Date'] = pd.to_datetime(df_dash['Date']).dt.date
-                daily = df_dash.groupby('Date')['Profit'].sum().reset_index().sort_values('Date')
-                daily['Cumulative Profit'] = daily['Profit'].cumsum()
-                
-                # --- NEW METRICS CALCULATIONS ---
-                total_bets = len(df_dash)
-                wins = len(df_dash[df_dash['Result'] == 'Win'])
-                losses = len(df_dash[df_dash['Result'] == 'Loss'])
-                pushes = len(df_dash[df_dash['Result'] == 'Push'])
-                
-                # Expanded to 5 columns
-                m1, m2, m3, m4, m5 = st.columns(5)
-                m1.metric("Total P/L", f"\${df_current['Profit'].sum():,.2f}")
-                m2.metric("Total Bets", total_bets)
-                m3.metric("Record (W-L-P)", f"{wins}-{losses}-{pushes}")
-                m4.metric("Days Active", len(daily))
-                m5.metric("Avg Daily Profit", f"\${daily['Profit'].mean():,.2f}")
-                
-                fig_line = px.line(daily, x='Date', y='Cumulative Profit', title="Profit (End of Day)", markers=True)
-                fig_line.update_xaxes(type='date', tickformat='%Y-%m-%d', dtick="D1")
-                st.plotly_chart(fig_line, use_container_width=True)
-                
-                fig_bar = px.bar(daily, x='Date', y='Profit', title="Daily Individual Profit", color='Profit', color_continuous_scale=['red', 'gray', 'green'])
-                fig_bar.update_xaxes(type='date', tickformat='%Y-%m-%d', dtick="D1")
-                st.plotly_chart(fig_bar, use_container_width=True)
+        if not df_current.empty:
+            df_dash = df_current.copy()
+            df_dash['Date'] = pd.to_datetime(df_dash['Date']).dt.date
+            daily = df_dash.groupby('Date')['Profit'].sum().reset_index().sort_values('Date')
+            daily['Cumulative Profit'] = daily['Profit'].cumsum()
+            
+            total_bets = len(df_dash)
+            wins = len(df_dash[df_dash['Result'] == 'Win'])
+            losses = len(df_dash[df_dash['Result'] == 'Loss'])
+            pushes = len(df_dash[df_dash['Result'] == 'Push'])
+            
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Total P/L", f"\${df_current['Profit'].sum():,.2f}")
+            m2.metric("Total Bets", total_bets)
+            m3.metric("Record (W-L-P)", f"{wins}-{losses}-{pushes}")
+            m4.metric("Days Active", len(daily))
+            m5.metric("Avg Daily Profit", f"\${daily['Profit'].mean():,.2f}")
+            
+            fig_line = px.line(daily, x='Date', y='Cumulative Profit', title="Profit (End of Day)", markers=True)
+            fig_line.update_xaxes(type='date', tickformat='%Y-%m-%d', dtick="D1")
+            st.plotly_chart(fig_line, use_container_width=True)
+            
+            fig_bar = px.bar(daily, x='Date', y='Profit', title="Daily Individual Profit", color='Profit', color_continuous_scale=['red', 'gray', 'green'])
+            fig_bar.update_xaxes(type='date', tickformat='%Y-%m-%d', dtick="D1")
+            st.plotly_chart(fig_bar, use_container_width=True)
 
     elif nav == "🗄️ History":
         st.subheader("🏟️ Active Wagers")
