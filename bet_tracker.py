@@ -21,19 +21,27 @@ st.markdown("""
     [data-testid="stSidebar"] {
         font-size: 0.85rem;
     }
+    [data-testid="stSidebarNav"] {
+        padding-top: 1rem;
+    }
     [data-testid="stSidebar"] .stMetric {
-        padding: 0px;
+        padding: 5px;
+    }
+    /* Compact Metric values */
+    [data-testid="stMetricValue"] {
+        font-size: 1.4rem !important;
     }
     [data-testid="stSidebar"] .stButton button {
         padding: 0.2rem 0.5rem;
         font-size: 0.8rem;
     }
-    /* Reduce whitespace between sidebar elements */
+    /* Reduce whitespace in main container */
     .block-container {
-        padding-top: 2rem;
+        padding-top: 1.5rem;
+        padding-bottom: 1rem;
     }
     </style>
-    """, unsafe_markdown=True)
+    """, unsafe_allow_html=True) # FIXED: Changed from unsafe_markdown to unsafe_allow_html
 
 # --- 3. GOOGLE SHEETS CONNECTION ---
 @st.cache_resource
@@ -195,12 +203,12 @@ if st.session_state["authentication_status"]:
 
     df_current = load_data(username)
 
-    # --- SIDEBAR UI ---
+    # --- SIDEBAR UI (Condensed) ---
     with st.sidebar:
         authenticator.logout('Logout', 'sidebar')
         st.metric("💰 Bankroll", f"\${st.session_state.bankroll:,.2f}")
         
-        # FIXED: "Adjust Balance" widgets now inside expander by removing st.sidebar prefix
+        # Expander logic: Widgets stay inside when st.sidebar prefix is removed
         with st.expander("⚙️ Adjust Balance"):
             adj_action = st.radio("Action", ["Add/Remove", "Set Exact"], horizontal=True)
             if adj_action == "Add/Remove":
@@ -277,7 +285,6 @@ if st.session_state["authentication_status"]:
                 if p != 0: update_bankroll(p, username)
                 st.session_state.autofill_event = ""; st.session_state.autofill_meta = {}; st.session_state.form_stake = 0.0; st.rerun()
 
-        # Add Book/State Expanders (Restored Under the Form)
         with st.expander("➕ Add New Book or State"):
             nb_col, ns_col = st.columns(2)
             new_bk = nb_col.text_input("New Book")
